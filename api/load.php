@@ -26,16 +26,41 @@ if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
 // Configuration
 define('DOCUMENTS_DIR', __DIR__ . '/../documents/');
 
+/**
+ * Extract document ID from URL parameter
+ * Supports both formats: "a3b5c7d9" or "my-document-a3b5c7d9"
+ */
+function extractDocumentId($docParam) {
+    // If contains hyphen, ID is the last segment
+    if (strpos($docParam, '-') !== false) {
+        $parts = explode('-', $docParam);
+        return end($parts);
+    }
+
+    // Otherwise, the whole parameter is the ID
+    return $docParam;
+}
+
+/**
+ * Validate document ID format (8 alphanumeric characters)
+ */
+function isValidDocumentId($id) {
+    return preg_match('/^[a-z0-9]{8}$/', $id);
+}
+
 try {
     // Get document ID from query parameter
     if (!isset($_GET['id']) || empty($_GET['id'])) {
         throw new Exception('No document ID provided');
     }
 
-    $id = $_GET['id'];
+    $docParam = $_GET['id'];
+
+    // Extract actual ID (handles both "id" and "slug-id" formats)
+    $id = extractDocumentId($docParam);
 
     // Validate ID format (security: prevent directory traversal)
-    if (!preg_match('/^doc_[a-f0-9\.]+$/', $id)) {
+    if (!isValidDocumentId($id)) {
         throw new Exception('Invalid document ID format');
     }
 

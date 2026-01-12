@@ -32,6 +32,54 @@ if (!is_dir(DOCUMENTS_DIR)) {
     mkdir(DOCUMENTS_DIR, 0755, true);
 }
 
+/**
+ * Generate short, clean ID (8 alphanumeric characters)
+ */
+function generateShortId() {
+    $chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    $id = '';
+
+    // Use timestamp for uniqueness (base36 encoded)
+    $timestamp = base_convert(time(), 10, 36);
+
+    // Add random characters
+    for ($i = 0; $i < 8; $i++) {
+        $id .= $chars[random_int(0, strlen($chars) - 1)];
+    }
+
+    // Mix timestamp into the ID for better uniqueness
+    $id = substr($timestamp . $id, 0, 8);
+
+    return $id;
+}
+
+/**
+ * Create URL-friendly slug from title
+ */
+function createSlug($title) {
+    // Convert to lowercase
+    $slug = strtolower($title);
+
+    // Remove .md extension if present
+    $slug = preg_replace('/\.md$/', '', $slug);
+
+    // Replace spaces and special chars with hyphens
+    $slug = preg_replace('/[^a-z0-9]+/', '-', $slug);
+
+    // Remove leading/trailing hyphens
+    $slug = trim($slug, '-');
+
+    // Limit length
+    $slug = substr($slug, 0, 50);
+
+    // If empty or "untitled", return empty (will use ID only)
+    if (empty($slug) || $slug === 'untitled') {
+        return '';
+    }
+
+    return $slug;
+}
+
 try {
     // Get POST data
     $input = file_get_contents('php://input');
@@ -50,16 +98,16 @@ try {
         throw new Exception('Content exceeds maximum size of 5MB');
     }
 
-    // Sanitize title for filename
-    $safeTitle = preg_replace('/[^a-zA-Z0-9_-]/', '', str_replace(' ', '_', $title));
-    $safeTitle = substr($safeTitle, 0, 50); // Limit title length
+    // Generate short, clean ID (8 characters: alphanumeric)
+    $id = generateShortId();
 
-    // Generate unique ID
-    $id = uniqid('doc_', true);
+    // Create slug from title for better URLs
+    $slug = createSlug($title);
 
     // Create document metadata
     $metadata = [
         'id' => $id,
+        'slug' => $slug,
         'title' => $title,
         'created' => date('Y-m-d H:i:s'),
         'size' => strlen($content),
@@ -85,9 +133,10 @@ try {
     echo json_encode([
         'success' => true,
         'id' => $id,
+        'slug' => $slug,
         'title' => $title,
         'created' => $metadata['created'],
-        'url' => getDocumentUrl($id)
+        'url' => getDocumentUrl($id, $slug)
     ]);
 
 } catch (Exception $e) {
@@ -99,11 +148,15 @@ try {
 }
 
 /**
- * Generate document URL
+ * Generate document URL with optional slug
  */
-function getDocumentUrl($id) {
+function getDocumentUrl($id, $slug = '') {
     $protocol = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http';
     $host = $_SERVER['HTTP_HOST'];
     $path = dirname(dirname($_SERVER['SCRIPT_NAME']));
-    return $protocol . '://' . $host . $path . '?doc=' . $id;
+
+    // Format: ?doc=slug-id or ?doc=id (if no slug)
+    $docParam = !empty($slug) ? $slug . '-' . $id : $id;
+
+    return $protocol . '://' . $host . $path . '?doc=' . $docParam;
 }

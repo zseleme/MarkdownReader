@@ -12,10 +12,21 @@ Esta funcionalidade permite compartilhar documentos Markdown através de links �
 4. Um link único será copiado para sua área de transferência
 5. Compartilhe esse link com outras pessoas
 
-**Exemplo de link gerado:**
+**Exemplos de links gerados:**
 ```
-https://seu-servidor.com/mdreader?doc=doc_6777abc123def.456789
+# Documento sem título (apenas ID)
+https://seu-servidor.com/mdreader?doc=a3b5c7d9
+
+# Documento com título (slug + ID)
+https://seu-servidor.com/mdreader?doc=meu-documento-a3b5c7d9
+https://seu-servidor.com/mdreader?doc=guia-markdown-k8x2p9z1
 ```
+
+**Formato das URLs:**
+- ✅ **Curtas e limpas:** IDs com apenas 8 caracteres alfanuméricos
+- ✅ **Descritivas:** Incluem o título do documento quando disponível
+- ✅ **Seguras:** Validação robusta contra directory traversal
+- ✅ **Flexíveis:** Funcionam com ou sem slug
 
 ### Acessar um Documento Compartilhado
 
@@ -32,11 +43,18 @@ MDReader/
 │   ├── save.php          # API para salvar documentos
 │   └── load.php          # API para carregar documentos
 ├── documents/
-│   ├── doc_xxxxx.md      # Conteúdo dos documentos
-│   ├── doc_xxxxx.json    # Metadados (título, data, etc.)
+│   ├── a3b5c7d9.md       # Conteúdo do documento (ID: 8 chars)
+│   ├── a3b5c7d9.json     # Metadados (título, slug, data, etc.)
+│   ├── k8x2p9z1.md       # Outro documento
+│   ├── k8x2p9z1.json     # Seus metadados
 │   ├── .htaccess         # Proteção de acesso direto
 │   └── README.md         # Documentação do diretório
 ```
+
+**Formato dos arquivos:**
+- **ID:** 8 caracteres alfanuméricos (ex: `a3b5c7d9`)
+- **Conteúdo:** `{id}.md` - arquivo Markdown
+- **Metadados:** `{id}.json` - JSON com título, slug, data de criação, tamanho
 
 ## 🔧 Requisitos do Servidor
 
@@ -101,10 +119,23 @@ Salva um documento no servidor.
 ```json
 {
   "success": true,
-  "id": "doc_6777abc123def.456789",
-  "title": "Meu Documento",
+  "id": "a3b5c7d9",
+  "slug": "meu-documento",
+  "title": "Meu Documento.md",
   "created": "2026-01-12 10:30:45",
-  "url": "https://seu-servidor.com/mdreader?doc=doc_6777abc123def.456789"
+  "url": "https://seu-servidor.com/mdreader?doc=meu-documento-a3b5c7d9"
+}
+```
+
+**Response (sucesso - sem título):**
+```json
+{
+  "success": true,
+  "id": "k8x2p9z1",
+  "slug": "",
+  "title": "Untitled",
+  "created": "2026-01-12 10:35:22",
+  "url": "https://seu-servidor.com/mdreader?doc=k8x2p9z1"
 }
 ```
 
@@ -116,17 +147,23 @@ Salva um documento no servidor.
 }
 ```
 
-### GET /api/load.php?id=DOC_ID
+### GET /api/load.php?id=DOC_PARAM
 
-Carrega um documento pelo ID.
+Carrega um documento pelo ID. Aceita formatos: `id` ou `slug-id`
+
+**Exemplos de chamadas:**
+```
+/api/load.php?id=a3b5c7d9
+/api/load.php?id=meu-documento-a3b5c7d9
+```
 
 **Response (sucesso):**
 ```json
 {
   "success": true,
-  "id": "doc_6777abc123def.456789",
+  "id": "a3b5c7d9",
   "content": "# Meu Documento\n\nConteúdo...",
-  "title": "Meu Documento",
+  "title": "Meu Documento.md",
   "created": "2026-01-12 10:30:45",
   "size": 1234
 }
