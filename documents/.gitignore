@@ -1,0 +1,8 @@
+# Ignore all document files (users' uploaded content)
+*.md
+*.json
+
+# But keep the README and .htaccess
+!README.md
+!.htaccess
+!.gitignore

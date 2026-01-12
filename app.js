@@ -1000,6 +1000,118 @@ function setupKeyboardShortcuts() {
     });
 }
 
+// ===== ONLINE SHARING =====
+
+/**
+ * Save current document to server and get shareable link
+ */
+async function shareDocument() {
+    const tab = tabs.find(t => t.id === activeTabId);
+    if (!tab) return;
+
+    const content = editor.getValue();
+    const title = tab.fileName || 'Untitled';
+
+    try {
+        showToast('Saving to server...');
+
+        const response = await fetch('api/save.php', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                content: content,
+                title: title
+            })
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+            // Copy URL to clipboard
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                await navigator.clipboard.writeText(data.url);
+                showToast('Link copied to clipboard! Share: ' + data.url, 8000);
+            } else {
+                // Fallback: show prompt with URL
+                prompt('Share this link:', data.url);
+            }
+
+            // Store document ID in tab
+            tab.sharedId = data.id;
+            tab.sharedUrl = data.url;
+
+        } else {
+            throw new Error(data.error || 'Failed to save document');
+        }
+
+    } catch (error) {
+        console.error('Error sharing document:', error);
+        showToast('Error sharing document: ' + error.message, 5000);
+    }
+}
+
+/**
+ * Load document from server by ID
+ */
+async function loadSharedDocument(docId) {
+    try {
+        showToast('Loading shared document...');
+
+        const response = await fetch('api/load.php?id=' + encodeURIComponent(docId));
+        const data = await response.json();
+
+        if (data.success) {
+            // Create new tab with loaded content
+            const newTab = {
+                id: ++tabCounter,
+                fileName: data.title || 'Shared Document',
+                content: data.content,
+                isModified: false,
+                fileHandle: null,
+                sharedId: docId
+            };
+
+            tabs.push(newTab);
+            activeTabId = newTab.id;
+
+            // Update UI
+            renderTabs();
+            switchToTab(newTab.id);
+
+            showToast('Shared document loaded: ' + newTab.fileName, 3000);
+
+            // Update URL without reloading
+            const url = new URL(window.location);
+            url.searchParams.set('doc', docId);
+            window.history.replaceState({}, '', url);
+
+        } else {
+            throw new Error(data.error || 'Failed to load document');
+        }
+
+    } catch (error) {
+        console.error('Error loading shared document:', error);
+        showToast('Error loading shared document: ' + error.message, 5000);
+    }
+}
+
+/**
+ * Check URL for shared document ID and load it
+ */
+function checkForSharedDocument() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const docId = urlParams.get('doc');
+
+    if (docId) {
+        // Wait a bit for editor to be ready
+        setTimeout(() => {
+            loadSharedDocument(docId);
+        }, 500);
+    }
+}
+
 // ===== EVENT LISTENERS =====
 
 function setupEventListeners() {
@@ -1009,6 +1121,7 @@ function setupEventListeners() {
     document.getElementById('save-btn').addEventListener('click', saveFile);
     document.getElementById('save-as-btn').addEventListener('click', saveFileAs);
     document.getElementById('export-html-btn').addEventListener('click', exportToHTML);
+    document.getElementById('share-btn').addEventListener('click', shareDocument);
     document.getElementById('view-mode-toggle').addEventListener('click', toggleViewMode);
     document.getElementById('sync-scroll-toggle').addEventListener('click', toggleSyncScroll);
     document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
@@ -1058,6 +1171,9 @@ function init() {
     setupResizer();
     setupDragDrop();
     setupKeyboardShortcuts();
+
+    // Check for shared document in URL
+    checkForSharedDocument();
 
     // Display API support message
     if (!hasFileSystemAccess) {

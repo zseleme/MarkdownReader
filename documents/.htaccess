@@ -1,0 +1,12 @@
+# MDReader Documents Directory - Security Configuration
+# Prevent direct access to document files
+# All access should go through the API
+
+# Deny all direct access
+Deny from all
+
+# Only allow access from server-side scripts
+<FilesMatch "\.(md|json)$">
+    Order Allow,Deny
+    Deny from all
+</FilesMatch>
