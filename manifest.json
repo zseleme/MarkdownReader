@@ -1,0 +1,48 @@
+{
+  "name": "MDReader - Markdown Editor",
+  "short_name": "MDReader",
+  "description": "Modern Markdown editor with live preview, syntax highlighting, and tabs support",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#1a1a1a",
+  "theme_color": "#1a1a1a",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["productivity", "utilities"],
+  "screenshots": [],
+  "file_handlers": [
+    {
+      "action": "./index.html",
+      "accept": {
+        "text/markdown": [".md", ".markdown"],
+        "text/plain": [".txt"]
+      }
+    }
+  ],
+  "share_target": {
+    "action": "./index.html",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "files": [
+        {
+          "name": "file",
+          "accept": ["text/markdown", "text/plain"]
+        }
+      ]
+    }
+  }
+}

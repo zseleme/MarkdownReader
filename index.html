@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="MDReader - Modern Markdown Editor with Live Preview">
+    <meta name="theme-color" content="#1a1a1a">
+
+    <!-- PWA -->
+    <link rel="manifest" href="manifest.json">
+    <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+    <link rel="apple-touch-icon" href="icon-192.png">
+
+    <title>MDReader - Markdown Editor</title>
+
+    <!-- Styles -->
+    <link rel="stylesheet" href="styles.css">
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+    <!-- Font Awesome for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <!-- Marked.js for Markdown parsing -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <!-- Prism.js for syntax highlighting -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markdown.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-javascript.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-css.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-java.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+
+    <script>
+        // Apply theme immediately to prevent flashing
+        (function() {
+            try {
+                const savedTheme = localStorage.getItem('mdreader-theme') || 'dark';
+                if (savedTheme === 'dark') {
+                    document.documentElement.classList.add('dark-theme-preload');
+                }
+            } catch (e) {
+                // If localStorage fails, default to dark theme
+                document.documentElement.classList.add('dark-theme-preload');
+            }
+        })();
+    </script>
+</head>
+<body>
+    <!-- Simple header (no window controls needed in browser) -->
+    <div class="header">
+        <div class="header-text">
+            <i class="fas fa-book"></i>
+            MDReader
+        </div>
+        <div class="header-info" id="header-info">
+            <div id="autosave-indicator" class="autosave-indicator">
+                <i class="fas fa-check-circle" id="autosave-icon"></i>
+                <span id="autosave-status">Pronto</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="toolbar">
+        <button id="new-tab-btn" class="btn btn-primary" title="New Tab (Ctrl+T)">
+            <i class="fas fa-plus"></i>
+            <span>New</span>
+        </button>
+        <button id="open-btn" class="btn btn-primary" title="Open File (Ctrl+O)">
+            <i class="fas fa-folder-open"></i>
+            <span>Open</span>
+        </button>
+        <button id="save-btn" class="btn btn-primary" title="Save File (Ctrl+S)">
+            <i class="fas fa-save"></i>
+            <span>Save</span>
+        </button>
+        <button id="save-as-btn" class="btn btn-secondary" title="Save As (Ctrl+Shift+S)">
+            <i class="fas fa-file-export"></i>
+            <span>Save As</span>
+        </button>
+        <div class="toolbar-separator"></div>
+        <button id="export-html-btn" class="btn btn-secondary" title="Export to HTML">
+            <i class="fas fa-file-code"></i>
+            <span>Export</span>
+        </button>
+        <button id="view-mode-toggle" class="btn btn-toggle" title="Toggle View Mode">
+            <i class="fas fa-columns" id="view-mode-icon"></i>
+            <span id="view-mode-text">Split</span>
+        </button>
+        <button id="sync-scroll-toggle" class="btn btn-toggle" title="Toggle Sync Scroll">
+            <i class="fas fa-link" id="sync-scroll-icon"></i>
+            <span>Sync</span>
+        </button>
+        <button id="theme-toggle" class="btn btn-toggle" title="Toggle Theme">
+            <i class="fas fa-moon" id="theme-icon"></i>
+            <span>Theme</span>
+        </button>
+        <div class="toolbar-spacer"></div>
+        <div class="autosave-toggle-container">
+            <label class="autosave-toggle-label">
+                <span class="autosave-toggle-text">Autosave</span>
+                <button class="toggle-switch" id="autosave-toggle" title="Toggle Autosave" aria-pressed="true">
+                    <span class="toggle-slider"></span>
+                </button>
+            </label>
+        </div>
+    </div>
+
+    <!-- Tabs container -->
+    <div class="tabs-container" id="tabs-container">
+        <div class="tabs-wrapper">
+            <div class="tabs-list" id="tabs-list"></div>
+            <div class="tabs-controls">
+                <button id="new-tab-btn-small" class="tab-control-btn" title="New Tab">
+                    <i class="fas fa-plus"></i>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div class="container" id="main-container">
+        <div class="panel editor-panel" id="editor-panel">
+            <div id="editor"></div>
+        </div>
+        <div class="resizer" id="resizer"></div>
+        <div class="panel preview-panel" id="preview-panel">
+            <div id="preview"></div>
+        </div>
+    </div>
+
+    <div class="status-bar" id="status-bar">
+        Untitled - Line 1, Column 1 - Dark - Ready
+    </div>
+
+    <!-- Notification Toast -->
+    <div id="toast" class="toast"></div>
+
+    <script>
+        // Handle errors during script loading
+        window.addEventListener('error', function(e) {
+            console.error('Global error:', e.error);
+        });
+
+        window.addEventListener('unhandledrejection', function(e) {
+            console.error('Unhandled promise rejection:', e.reason);
+        });
+    </script>
+
+    <!-- Monaco Editor Loader -->
+    <script src="monaco-loader.js"></script>
+
+    <!-- Main App Logic -->
+    <script src="app.js"></script>
+</body>
+</html>
