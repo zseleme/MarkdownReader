@@ -391,6 +391,45 @@ ${html}
 
 // ===== TAB MANAGEMENT =====
 
+/**
+ * Rename a tab
+ */
+function renameTab(tabId) {
+    const tab = tabs.find(t => t.id === tabId);
+    if (!tab) return;
+
+    const currentName = tab.fileName;
+    const nameWithoutExt = currentName.replace(/\.md$/, '');
+
+    const newName = prompt('Rename file:', nameWithoutExt);
+
+    if (newName && newName.trim() !== '') {
+        let finalName = newName.trim();
+
+        // Automatically add .md extension if not present
+        if (!finalName.endsWith('.md')) {
+            finalName += '.md';
+        }
+
+        // Update tab
+        tab.fileName = finalName;
+        tab.isModified = true;
+
+        // Update UI
+        updateTabUI(tab);
+
+        // Update status bar if this is the active tab
+        if (activeTabId === tabId) {
+            currentFileName = finalName;
+            updateStatusBar();
+        }
+
+        // Save changes
+        saveTabsToLocalStorage();
+        showToast('File renamed to: ' + finalName);
+    }
+}
+
 function createNewTab(fileName = 'Untitled', content = '', fileHandle = null, skipSave = false) {
     const tabId = ++tabCounter;
 
@@ -412,6 +451,18 @@ function createNewTab(fileName = 'Untitled', content = '', fileHandle = null, sk
     const titleSpan = document.createElement('span');
     titleSpan.className = 'tab-title';
     titleSpan.textContent = fileName;
+
+    // Add rename functionality on double-click
+    titleSpan.ondblclick = (e) => {
+        e.stopPropagation();
+        renameTab(tabId);
+    };
+
+    // If Untitled, add visual hint and allow single click to rename
+    if (fileName === 'Untitled') {
+        titleSpan.classList.add('untitled');
+        titleSpan.title = 'Double-click to rename';
+    }
 
     const closeBtn = document.createElement('span');
     closeBtn.className = 'tab-close';
@@ -528,6 +579,15 @@ function updateTabUI(tab) {
 
     const titleSpan = tabElement.querySelector('.tab-title');
     titleSpan.textContent = tab.fileName + (tab.isModified ? ' •' : '');
+
+    // Add/remove untitled class and tooltip
+    if (tab.fileName === 'Untitled') {
+        titleSpan.classList.add('untitled');
+        titleSpan.title = 'Double-click to rename';
+    } else {
+        titleSpan.classList.remove('untitled');
+        titleSpan.title = 'Double-click to rename';
+    }
 }
 
 function updateActiveTabContent() {
