@@ -1063,24 +1063,15 @@ async function loadSharedDocument(docId) {
         const data = await response.json();
 
         if (data.success) {
-            // Create new tab with loaded content
-            const newTab = {
-                id: ++tabCounter,
-                fileName: data.title || 'Shared Document',
-                content: data.content,
-                isModified: false,
-                fileHandle: null,
-                sharedId: docId
-            };
+            // Create new tab with loaded content using existing function
+            const fileName = data.title || 'Shared Document';
+            createNewTab(fileName, data.content, null, false);
 
-            tabs.push(newTab);
-            activeTabId = newTab.id;
+            // Store shared document ID in the newly created tab
+            const newTab = tabs[tabs.length - 1];
+            newTab.sharedId = docId;
 
-            // Update UI
-            renderTabs();
-            switchToTab(newTab.id);
-
-            showToast('Shared document loaded: ' + newTab.fileName, 3000);
+            showToast('Shared document loaded: ' + fileName, 3000);
 
             // Update URL without reloading
             const url = new URL(window.location);
