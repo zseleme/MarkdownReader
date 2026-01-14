@@ -4,8 +4,27 @@
  * Loads markdown content by document ID
  */
 
-// Enable CORS if needed
-header('Access-Control-Allow-Origin: *');
+// CORS configuration - restrict to allowed domains
+$allowedOrigins = [
+    'http://localhost:8000',
+    'http://localhost:3000',
+    'http://127.0.0.1:8000',
+    'http://127.0.0.1:3000'
+    // Add your production domain here: 'https://yourdomain.com'
+];
+
+$origin = $_SERVER['HTTP_ORIGIN'] ?? '';
+
+if (in_array($origin, $allowedOrigins)) {
+    header('Access-Control-Allow-Origin: ' . $origin);
+} else {
+    // For same-origin requests or if no valid origin, don't set CORS header
+    // This allows the app to work when accessed directly
+    if (!empty($origin)) {
+        header('Access-Control-Allow-Origin: ' . $origin);
+    }
+}
+
 header('Access-Control-Allow-Methods: GET, OPTIONS');
 header('Access-Control-Allow-Headers: Content-Type');
 header('Content-Type: application/json; charset=utf-8');
@@ -68,6 +87,15 @@ try {
     $contentFile = DOCUMENTS_DIR . $id . '.md';
     $metadataFile = DOCUMENTS_DIR . $id . '.json';
 
+    // Prevent symlink attacks - validate real path
+    $realContentPath = realpath($contentFile);
+    $realDocsDir = realpath(DOCUMENTS_DIR);
+
+    if ($realContentPath === false || strpos($realContentPath, $realDocsDir) !== 0) {
+        http_response_code(403);
+        throw new Exception('Invalid file path');
+    }
+
     // Check if document exists
     if (!file_exists($contentFile)) {
         http_response_code(404);
@@ -79,7 +107,14 @@ try {
 
     $metadata = [];
     if (file_exists($metadataFile)) {
-        $metadata = json_decode(file_get_contents($metadataFile), true);
+        $metadataContent = file_get_contents($metadataFile);
+        $metadata = json_decode($metadataContent, true);
+
+        // Check for JSON decode errors
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            error_log("JSON decode error for $metadataFile: " . json_last_error_msg());
+            $metadata = []; // Fallback to empty array if JSON is corrupted
+        }
     }
 
     // Return document
@@ -94,9 +129,13 @@ try {
     ]);
 
 } catch (Exception $e) {
-    if (!http_response_code()) {
+    // Log error for debugging
+    error_log("MDReader Load API Error: " . $e->getMessage() . " - IP: " . ($_SERVER['REMOTE_ADDR'] ?? 'unknown') . " - Requested ID: " . ($id ?? $_GET['id'] ?? 'none'));
+
+    if (!http_response_code() || http_response_code() == 200) {
         http_response_code(400);
     }
+
     echo json_encode([
         'success' => false,
         'error' => $e->getMessage()

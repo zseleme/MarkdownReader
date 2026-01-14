@@ -48,6 +48,16 @@ const hasFileSystemAccess = 'showOpenFilePicker' in window;
 
 // ===== UTILITY FUNCTIONS =====
 
+/**
+ * Sanitize HTML to prevent XSS attacks
+ * Escapes HTML special characters
+ */
+function sanitizeHTML(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+
 function showToast(message, duration = 3000) {
     const toast = document.getElementById('toast');
     toast.textContent = message;
@@ -452,16 +462,19 @@ function createNewTab(fileName = 'Untitled', content = '', fileHandle = null, sk
     titleSpan.className = 'tab-title';
     titleSpan.textContent = fileName;
 
-    // Add rename functionality on double-click
-    titleSpan.ondblclick = (e) => {
+    // Add rename functionality on right-click (context menu)
+    titleSpan.oncontextmenu = (e) => {
+        e.preventDefault();
         e.stopPropagation();
         renameTab(tabId);
     };
 
-    // If Untitled, add visual hint and allow single click to rename
+    // If Untitled, add visual hint
     if (fileName === 'Untitled') {
         titleSpan.classList.add('untitled');
-        titleSpan.title = 'Double-click to rename';
+        titleSpan.title = 'Right-click to rename';
+    } else {
+        titleSpan.title = 'Right-click to rename';
     }
 
     const closeBtn = document.createElement('span');
@@ -583,10 +596,10 @@ function updateTabUI(tab) {
     // Add/remove untitled class and tooltip
     if (tab.fileName === 'Untitled') {
         titleSpan.classList.add('untitled');
-        titleSpan.title = 'Double-click to rename';
+        titleSpan.title = 'Right-click to rename';
     } else {
         titleSpan.classList.remove('untitled');
-        titleSpan.title = 'Double-click to rename';
+        titleSpan.title = 'Right-click to rename';
     }
 }
 
@@ -1063,6 +1076,56 @@ function setupKeyboardShortcuts() {
 // ===== ONLINE SHARING =====
 
 /**
+ * Fetch with timeout and better error handling
+ * @param {string} url - The URL to fetch
+ * @param {object} options - Fetch options
+ * @param {number} timeout - Timeout in milliseconds (default: 30000)
+ * @returns {Promise<Response>}
+ */
+async function fetchWithTimeout(url, options = {}, timeout = 30000) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+    try {
+        const response = await fetch(url, {
+            ...options,
+            signal: controller.signal
+        });
+
+        clearTimeout(timeoutId);
+
+        // Validate HTTP status code
+        if (!response.ok) {
+            const text = await response.text();
+            let errorMessage;
+
+            try {
+                const data = JSON.parse(text);
+                errorMessage = data.error || `HTTP error ${response.status}`;
+            } catch (e) {
+                errorMessage = `HTTP error ${response.status}: ${text.substring(0, 100)}`;
+            }
+
+            throw new Error(errorMessage);
+        }
+
+        return response;
+
+    } catch (error) {
+        clearTimeout(timeoutId);
+
+        // Better error messages based on error type
+        if (error.name === 'AbortError') {
+            throw new Error('Request timeout - server may be slow or unreachable');
+        } else if (!navigator.onLine) {
+            throw new Error('You are offline. Please check your internet connection.');
+        } else {
+            throw error;
+        }
+    }
+}
+
+/**
  * Save current document to server and get shareable link
  */
 async function shareDocument() {
@@ -1075,7 +1138,7 @@ async function shareDocument() {
     try {
         showToast('Saving to server...');
 
-        const response = await fetch('api/save.php', {
+        const response = await fetchWithTimeout('api/save.php', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -1084,7 +1147,7 @@ async function shareDocument() {
                 content: content,
                 title: title
             })
-        });
+        }, 30000);
 
         const data = await response.json();
 
@@ -1119,12 +1182,18 @@ async function loadSharedDocument(docId) {
     try {
         showToast('Loading shared document...');
 
-        const response = await fetch('api/load.php?id=' + encodeURIComponent(docId));
+        const response = await fetchWithTimeout(
+            'api/load.php?id=' + encodeURIComponent(docId),
+            {},
+            30000
+        );
+
         const data = await response.json();
 
         if (data.success) {
             // Create new tab with loaded content using existing function
-            const fileName = data.title || 'Shared Document';
+            // Sanitize title to prevent XSS
+            const fileName = sanitizeHTML(data.title || 'Shared Document');
             createNewTab(fileName, data.content, null, false);
 
             // Store shared document ID in the newly created tab
@@ -1149,17 +1218,45 @@ async function loadSharedDocument(docId) {
 }
 
 /**
+ * Wait for editor to be fully initialized
+ * @returns {Promise<void>}
+ */
+function waitForEditorReady() {
+    return new Promise((resolve, reject) => {
+        const maxAttempts = 50; // 5 seconds max (50 * 100ms)
+        let attempts = 0;
+
+        const checkEditor = setInterval(() => {
+            attempts++;
+
+            // Check if editor is ready
+            if (editor && editor.getValue !== undefined && editor.getModel() !== null) {
+                clearInterval(checkEditor);
+                resolve();
+            } else if (attempts >= maxAttempts) {
+                clearInterval(checkEditor);
+                reject(new Error('Editor initialization timeout'));
+            }
+        }, 100);
+    });
+}
+
+/**
  * Check URL for shared document ID and load it
  */
-function checkForSharedDocument() {
+async function checkForSharedDocument() {
     const urlParams = new URLSearchParams(window.location.search);
     const docId = urlParams.get('doc');
 
     if (docId) {
-        // Wait a bit for editor to be ready
-        setTimeout(() => {
+        try {
+            // Wait for editor to be ready
+            await waitForEditorReady();
             loadSharedDocument(docId);
-        }, 500);
+        } catch (error) {
+            console.error('Failed to load shared document:', error);
+            showToast('Failed to initialize editor', 5000);
+        }
     }
 }
 
