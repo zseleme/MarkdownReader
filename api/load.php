@@ -9,20 +9,18 @@ $allowedOrigins = [
     'http://localhost:8000',
     'http://localhost:3000',
     'http://127.0.0.1:8000',
-    'http://127.0.0.1:3000'
+    'http://127.0.0.1:3000',
+    'https://seleme.pt',
+    'https://seleme.pt/'
     // Add your production domain here: 'https://yourdomain.com'
 ];
 
 $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
 
+// Only set CORS header for whitelisted origins
+// Same-origin requests will work without CORS headers
 if (in_array($origin, $allowedOrigins)) {
     header('Access-Control-Allow-Origin: ' . $origin);
-} else {
-    // For same-origin requests or if no valid origin, don't set CORS header
-    // This allows the app to work when accessed directly
-    if (!empty($origin)) {
-        header('Access-Control-Allow-Origin: ' . $origin);
-    }
 }
 
 header('Access-Control-Allow-Methods: GET, OPTIONS');
@@ -65,6 +63,20 @@ function extractDocumentId($docParam) {
  */
 function isValidDocumentId($id) {
     return preg_match('/^[a-z0-9]{8}$/', $id);
+}
+
+/**
+ * Sanitize error message to prevent XSS
+ * Removes potentially dangerous characters from error messages
+ * @param string $message - The error message to sanitize
+ * @return string - Sanitized error message
+ */
+function sanitizeErrorMessage($message) {
+    // Remove HTML tags and encode special characters
+    $message = strip_tags($message);
+    $message = htmlspecialchars($message, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    // Limit length to prevent extremely long error messages
+    return mb_substr($message, 0, 500);
 }
 
 try {
@@ -129,15 +141,17 @@ try {
     ]);
 
 } catch (Exception $e) {
-    // Log error for debugging
+    // Log error for debugging (with full unsanitized message)
     error_log("MDReader Load API Error: " . $e->getMessage() . " - IP: " . ($_SERVER['REMOTE_ADDR'] ?? 'unknown') . " - Requested ID: " . ($id ?? $_GET['id'] ?? 'none'));
 
-    if (!http_response_code() || http_response_code() == 200) {
+    // Only set error code if not already set
+    if (http_response_code() === 200) {
         http_response_code(400);
     }
 
+    // Sanitize error message before sending to client to prevent XSS
     echo json_encode([
         'success' => false,
-        'error' => $e->getMessage()
+        'error' => sanitizeErrorMessage($e->getMessage())
     ]);
 }

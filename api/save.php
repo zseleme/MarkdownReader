@@ -10,20 +10,17 @@ $allowedOrigins = [
     'http://localhost:3000',
     'http://127.0.0.1:8000',
     'http://127.0.0.1:3000',
+    'https://seleme.pt',
     'https://seleme.pt/'
     // Add your production domain here: 'https://yourdomain.com'
 ];
 
 $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
 
+// Only set CORS header for whitelisted origins
+// Same-origin requests will work without CORS headers
 if (in_array($origin, $allowedOrigins)) {
     header('Access-Control-Allow-Origin: ' . $origin);
-} else {
-    // For same-origin requests or if no valid origin, don't set CORS header
-    // This allows the app to work when accessed directly
-    if (!empty($origin)) {
-        header('Access-Control-Allow-Origin: ' . $origin);
-    }
 }
 
 header('Access-Control-Allow-Methods: POST, OPTIONS');
@@ -57,13 +54,29 @@ if (!is_dir(DOCUMENTS_DIR)) {
 /**
  * Check rate limit for IP address
  * Prevents spam and DOS attacks
+ * Uses file locking to prevent race conditions
  */
 function checkRateLimit($ip) {
     $rateLimitFile = sys_get_temp_dir() . '/mdreader_rate_' . md5($ip) . '.json';
 
-    if (file_exists($rateLimitFile)) {
-        $data = json_decode(file_get_contents($rateLimitFile), true);
+    // Open file with lock support (create if doesn't exist)
+    $fp = fopen($rateLimitFile, 'c+');
+    if (!$fp) {
+        throw new Exception('Rate limit check failed - unable to open file');
+    }
 
+    // Acquire exclusive lock (blocks until available)
+    if (!flock($fp, LOCK_EX)) {
+        fclose($fp);
+        throw new Exception('Rate limit check failed - unable to lock file');
+    }
+
+    try {
+        // Read existing data
+        $content = fread($fp, 8192);
+        $data = json_decode($content ?: '{}', true);
+
+        // Validate and update rate limit data
         if ($data && isset($data['timestamp']) && isset($data['count'])) {
             // Check if within rate window
             if (time() - $data['timestamp'] < RATE_WINDOW) {
@@ -77,13 +90,35 @@ function checkRateLimit($ip) {
                 $data = ['timestamp' => time(), 'count' => 1];
             }
         } else {
+            // First request or invalid data
             $data = ['timestamp' => time(), 'count' => 1];
         }
-    } else {
-        $data = ['timestamp' => time(), 'count' => 1];
-    }
 
-    file_put_contents($rateLimitFile, json_encode($data));
+        // Write updated data back to file
+        ftruncate($fp, 0);
+        rewind($fp);
+        fwrite($fp, json_encode($data));
+        fflush($fp);
+
+    } finally {
+        // Always release lock and close file
+        flock($fp, LOCK_UN);
+        fclose($fp);
+    }
+}
+
+/**
+ * Sanitize error message to prevent XSS
+ * Removes potentially dangerous characters from error messages
+ * @param string $message - The error message to sanitize
+ * @return string - Sanitized error message
+ */
+function sanitizeErrorMessage($message) {
+    // Remove HTML tags and encode special characters
+    $message = strip_tags($message);
+    $message = htmlspecialchars($message, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    // Limit length to prevent extremely long error messages
+    return mb_substr($message, 0, 500);
 }
 
 /**
@@ -240,16 +275,18 @@ try {
     ]);
 
 } catch (Exception $e) {
-    // Log error for debugging
+    // Log error for debugging (with full unsanitized message)
     error_log("MDReader Save API Error: " . $e->getMessage() . " - IP: " . ($clientIp ?? $_SERVER['REMOTE_ADDR'] ?? 'unknown'));
 
-    if (!http_response_code() || http_response_code() == 200) {
+    // Only set error code if not already set
+    if (http_response_code() === 200) {
         http_response_code(400);
     }
 
+    // Sanitize error message before sending to client to prevent XSS
     echo json_encode([
         'success' => false,
-        'error' => $e->getMessage()
+        'error' => sanitizeErrorMessage($e->getMessage())
     ]);
 }
 
