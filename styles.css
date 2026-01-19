@@ -472,6 +472,16 @@ body.dark-theme .toggle-switch:hover {
   text-decoration-style: dotted;
 }
 
+.tab-title.editing {
+  background-color: var(--background-tertiary);
+  border: 1px solid var(--accent-primary);
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent-primary-light);
+  cursor: text;
+}
+
 .tab-close {
   margin-left: auto;
   padding: var(--spacing-1);

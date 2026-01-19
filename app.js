@@ -331,17 +331,24 @@ async function exportToHTML() {
         const html = marked.parse(content);
 
         // Sanitize HTML with DOMPurify to prevent XSS in exported files
-        const cleanHTML = DOMPurify.sanitize(html, {
-            ALLOWED_TAGS: ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'a', 'ul', 'ol', 'li',
-                          'blockquote', 'code', 'pre', 'strong', 'em', 'img', 'table', 'thead',
-                          'tbody', 'tr', 'th', 'td', 'br', 'hr', 'del', 'ins', 'sup', 'sub',
-                          'div', 'span', 'input'],
-            ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'class', 'id', 'type', 'checked', 'disabled'],
-            ALLOW_DATA_ATTR: false
-        });
-
-        // Sanitize filename to prevent XSS in title tag
-        const safeFileName = DOMPurify.sanitize(currentFileName, { ALLOWED_TAGS: [] });
+        let cleanHTML, safeFileName;
+        if (typeof DOMPurify !== 'undefined') {
+            cleanHTML = DOMPurify.sanitize(html, {
+                ALLOWED_TAGS: ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'a', 'ul', 'ol', 'li',
+                              'blockquote', 'code', 'pre', 'strong', 'em', 'img', 'table', 'thead',
+                              'tbody', 'tr', 'th', 'td', 'br', 'hr', 'del', 'ins', 'sup', 'sub',
+                              'div', 'span', 'input'],
+                ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'class', 'id', 'type', 'checked', 'disabled'],
+                ALLOW_DATA_ATTR: false
+            });
+            // Sanitize filename to prevent XSS in title tag
+            safeFileName = DOMPurify.sanitize(currentFileName, { ALLOWED_TAGS: [] });
+        } else {
+            // Fallback if DOMPurify is not loaded
+            console.warn('DOMPurify not loaded, exported file may be vulnerable to XSS');
+            cleanHTML = html;
+            safeFileName = currentFileName.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
 
         const fullHTML = `<!DOCTYPE html>
 <html lang="en">
@@ -415,42 +422,99 @@ ${cleanHTML}
 // ===== TAB MANAGEMENT =====
 
 /**
- * Rename a tab
+ * Enable inline editing for a tab title
  */
-function renameTab(tabId) {
+function enableInlineRename(tabId, titleSpan) {
     const tab = tabs.find(t => t.id === tabId);
     if (!tab) return;
 
-    const currentName = tab.fileName;
-    const nameWithoutExt = currentName.replace(/\.md$/, '');
+    // Get current name without extension and modified indicator
+    const currentName = tab.fileName.replace(/\.md$/, '');
 
-    const newName = prompt('Rename file:', nameWithoutExt);
+    // Store original value in case of cancel
+    const originalName = currentName;
 
-    if (newName && newName.trim() !== '') {
-        let finalName = newName.trim();
+    // Make span editable
+    titleSpan.contentEditable = true;
+    titleSpan.textContent = currentName;
+    titleSpan.classList.add('editing');
+
+    // Select all text
+    titleSpan.focus();
+    const range = document.createRange();
+    range.selectNodeContents(titleSpan);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    // Function to save the rename
+    const saveRename = () => {
+        let newName = titleSpan.textContent.trim();
+
+        // Restore if empty or unchanged
+        if (!newName || newName === originalName) {
+            titleSpan.contentEditable = false;
+            titleSpan.classList.remove('editing');
+            updateTabUI(tab);
+            return;
+        }
 
         // Automatically add .md extension if not present
-        if (!finalName.endsWith('.md')) {
-            finalName += '.md';
+        if (!newName.endsWith('.md')) {
+            newName += '.md';
         }
 
         // Update tab
-        tab.fileName = finalName;
+        tab.fileName = newName;
         tab.isModified = true;
 
         // Update UI
+        titleSpan.contentEditable = false;
+        titleSpan.classList.remove('editing');
         updateTabUI(tab);
 
         // Update status bar if this is the active tab
         if (activeTabId === tabId) {
-            currentFileName = finalName;
+            currentFileName = newName;
             updateStatusBar();
         }
 
         // Save changes
         saveTabsToLocalStorage();
-        showToast('File renamed to: ' + finalName);
-    }
+        showToast('File renamed to: ' + newName);
+    };
+
+    // Function to cancel rename
+    const cancelRename = () => {
+        titleSpan.contentEditable = false;
+        titleSpan.classList.remove('editing');
+        updateTabUI(tab);
+    };
+
+    // Handle keyboard events
+    const handleKeydown = (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            saveRename();
+            titleSpan.removeEventListener('keydown', handleKeydown);
+            titleSpan.removeEventListener('blur', handleBlur);
+        } else if (e.key === 'Escape') {
+            e.preventDefault();
+            cancelRename();
+            titleSpan.removeEventListener('keydown', handleKeydown);
+            titleSpan.removeEventListener('blur', handleBlur);
+        }
+    };
+
+    // Handle blur (lost focus)
+    const handleBlur = () => {
+        saveRename();
+        titleSpan.removeEventListener('keydown', handleKeydown);
+        titleSpan.removeEventListener('blur', handleBlur);
+    };
+
+    titleSpan.addEventListener('keydown', handleKeydown);
+    titleSpan.addEventListener('blur', handleBlur);
 }
 
 function createNewTab(fileName = 'Untitled', content = '', fileHandle = null, skipSave = false) {
@@ -475,19 +539,19 @@ function createNewTab(fileName = 'Untitled', content = '', fileHandle = null, sk
     titleSpan.className = 'tab-title';
     titleSpan.textContent = fileName;
 
-    // Add rename functionality on right-click (context menu)
-    titleSpan.oncontextmenu = (e) => {
+    // Add rename functionality on double-click
+    titleSpan.ondblclick = (e) => {
         e.preventDefault();
         e.stopPropagation();
-        renameTab(tabId);
+        enableInlineRename(tabId, titleSpan);
     };
 
     // If Untitled, add visual hint
     if (fileName === 'Untitled') {
         titleSpan.classList.add('untitled');
-        titleSpan.title = 'Right-click to rename';
+        titleSpan.title = 'Double-click to rename';
     } else {
-        titleSpan.title = 'Right-click to rename';
+        titleSpan.title = 'Double-click to rename';
     }
 
     const closeBtn = document.createElement('span');
@@ -609,10 +673,10 @@ function updateTabUI(tab) {
     // Add/remove untitled class and tooltip
     if (tab.fileName === 'Untitled') {
         titleSpan.classList.add('untitled');
-        titleSpan.title = 'Right-click to rename';
+        titleSpan.title = 'Double-click to rename';
     } else {
         titleSpan.classList.remove('untitled');
-        titleSpan.title = 'Right-click to rename';
+        titleSpan.title = 'Double-click to rename';
     }
 }
 
@@ -720,14 +784,21 @@ function updatePreview() {
         const html = marked.parse(content);
 
         // Sanitize HTML with DOMPurify to prevent XSS attacks
-        const cleanHTML = DOMPurify.sanitize(html, {
-            ALLOWED_TAGS: ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'a', 'ul', 'ol', 'li',
-                          'blockquote', 'code', 'pre', 'strong', 'em', 'img', 'table', 'thead',
-                          'tbody', 'tr', 'th', 'td', 'br', 'hr', 'del', 'ins', 'sup', 'sub',
-                          'div', 'span', 'input'],
-            ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'class', 'id', 'type', 'checked', 'disabled'],
-            ALLOW_DATA_ATTR: false
-        });
+        let cleanHTML;
+        if (typeof DOMPurify !== 'undefined') {
+            cleanHTML = DOMPurify.sanitize(html, {
+                ALLOWED_TAGS: ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'a', 'ul', 'ol', 'li',
+                              'blockquote', 'code', 'pre', 'strong', 'em', 'img', 'table', 'thead',
+                              'tbody', 'tr', 'th', 'td', 'br', 'hr', 'del', 'ins', 'sup', 'sub',
+                              'div', 'span', 'input'],
+                ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'class', 'id', 'type', 'checked', 'disabled'],
+                ALLOW_DATA_ATTR: false
+            });
+        } else {
+            // Fallback if DOMPurify is not loaded yet
+            console.warn('DOMPurify not loaded, preview may be vulnerable to XSS');
+            cleanHTML = html;
+        }
 
         preview.innerHTML = cleanHTML;
 
@@ -749,7 +820,10 @@ function updatePreview() {
 
     } catch (error) {
         console.error('Error rendering markdown:', error);
-        preview.innerHTML = `<p style="color: red;">Error rendering markdown: ${DOMPurify.sanitize(error.message)}</p>`;
+        const safeMessage = typeof DOMPurify !== 'undefined'
+            ? DOMPurify.sanitize(error.message)
+            : error.message.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        preview.innerHTML = `<p style="color: red;">Error rendering markdown: ${safeMessage}</p>`;
     }
 }
 
