@@ -8,7 +8,7 @@ marked.setOptions({
     gfm: true,
     breaks: false,
     pedantic: false,
-    sanitize: false,
+    sanitize: false, // We use DOMPurify for XSS prevention instead
     smartLists: true,
     smartypants: false,
     xhtml: true,
@@ -330,12 +330,25 @@ async function exportToHTML() {
         const content = editor.getValue();
         const html = marked.parse(content);
 
+        // Sanitize HTML with DOMPurify to prevent XSS in exported files
+        const cleanHTML = DOMPurify.sanitize(html, {
+            ALLOWED_TAGS: ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'a', 'ul', 'ol', 'li',
+                          'blockquote', 'code', 'pre', 'strong', 'em', 'img', 'table', 'thead',
+                          'tbody', 'tr', 'th', 'td', 'br', 'hr', 'del', 'ins', 'sup', 'sub',
+                          'div', 'span', 'input'],
+            ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'class', 'id', 'type', 'checked', 'disabled'],
+            ALLOW_DATA_ATTR: false
+        });
+
+        // Sanitize filename to prevent XSS in title tag
+        const safeFileName = DOMPurify.sanitize(currentFileName, { ALLOWED_TAGS: [] });
+
         const fullHTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>${currentFileName}</title>
+    <title>${safeFileName}</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
@@ -385,7 +398,7 @@ async function exportToHTML() {
     </style>
 </head>
 <body>
-${html}
+${cleanHTML}
 </body>
 </html>`;
 
@@ -705,7 +718,18 @@ function updatePreview() {
 
     try {
         const html = marked.parse(content);
-        preview.innerHTML = html;
+
+        // Sanitize HTML with DOMPurify to prevent XSS attacks
+        const cleanHTML = DOMPurify.sanitize(html, {
+            ALLOWED_TAGS: ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'a', 'ul', 'ol', 'li',
+                          'blockquote', 'code', 'pre', 'strong', 'em', 'img', 'table', 'thead',
+                          'tbody', 'tr', 'th', 'td', 'br', 'hr', 'del', 'ins', 'sup', 'sub',
+                          'div', 'span', 'input'],
+            ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'class', 'id', 'type', 'checked', 'disabled'],
+            ALLOW_DATA_ATTR: false
+        });
+
+        preview.innerHTML = cleanHTML;
 
         // Highlight code blocks
         preview.querySelectorAll('pre code').forEach((block) => {
@@ -725,7 +749,7 @@ function updatePreview() {
 
     } catch (error) {
         console.error('Error rendering markdown:', error);
-        preview.innerHTML = `<p style="color: red;">Error rendering markdown: ${error.message}</p>`;
+        preview.innerHTML = `<p style="color: red;">Error rendering markdown: ${DOMPurify.sanitize(error.message)}</p>`;
     }
 }
 
