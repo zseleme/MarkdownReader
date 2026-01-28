@@ -1,10 +1,13 @@
-// MDReader Service Worker
-// Enables offline functionality and caching
+'use strict';
+
+/**
+ * MDReader Service Worker
+ * Provides offline functionality through strategic caching of static assets and CDN resources.
+ */
 
 const CACHE_NAME = 'mdreader-v1.0.0';
 const CDN_CACHE = 'mdreader-cdn-v1.0.0';
 
-// Files to cache immediately
 const STATIC_ASSETS = [
     './',
     './index.html',
@@ -14,165 +17,133 @@ const STATIC_ASSETS = [
     './manifest.json'
 ];
 
-// CDN resources to cache (with proper CORS)
 const CDN_RESOURCES = [
     'https://cdn.jsdelivr.net/npm/marked/marked.min.js',
     'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css',
     'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap'
 ];
 
-// Install event - cache static assets
-self.addEventListener('install', (event) => {
-    console.log('Service Worker: Installing...');
+/**
+ * Caches a list of URLs to a specified cache.
+ * @param {string} cacheName - Name of the cache to use
+ * @param {string[]} urls - URLs to cache
+ * @param {RequestInit} fetchOptions - Options for fetch requests
+ * @returns {Promise<void>}
+ */
+async function cacheUrls(cacheName, urls, fetchOptions = {}) {
+    const cache = await caches.open(cacheName);
+    return Promise.all(
+        urls.map(url =>
+            fetch(url, fetchOptions)
+                .then(response => cache.put(url, response))
+                .catch(err => console.warn(`Failed to cache ${url}:`, err))
+        )
+    );
+}
 
+/**
+ * Caches a response if it was successful.
+ * @param {string} cacheName - Name of the cache to use
+ * @param {Request} request - The original request
+ * @param {Response} response - The response to cache
+ */
+async function cacheIfSuccessful(cacheName, request, response) {
+    if (response.status === 200) {
+        const cache = await caches.open(cacheName);
+        cache.put(request, response.clone());
+    }
+}
+
+/**
+ * Network-first strategy: try network, fall back to cache.
+ * @param {Request} request - The request to handle
+ * @param {string} cacheName - Cache to use for fallback
+ * @returns {Promise<Response>}
+ */
+async function networkFirst(request, cacheName) {
+    try {
+        const response = await fetch(request);
+        await cacheIfSuccessful(cacheName, request, response);
+        return response;
+    } catch {
+        return caches.match(request);
+    }
+}
+
+/**
+ * Cache-first strategy with background update.
+ * @param {Request} request - The request to handle
+ * @param {string} cacheName - Cache to use
+ * @returns {Promise<Response>}
+ */
+async function cacheFirstWithUpdate(request, cacheName) {
+    const cachedResponse = await caches.match(request);
+
+    if (cachedResponse) {
+        fetch(request)
+            .then(response => cacheIfSuccessful(cacheName, request, response))
+            .catch(() => {});
+        return cachedResponse;
+    }
+
+    const response = await fetch(request);
+    await cacheIfSuccessful(cacheName, request, response);
+    return response;
+}
+
+self.addEventListener('install', (event) => {
     event.waitUntil(
         Promise.all([
-            // Cache static assets
-            caches.open(CACHE_NAME).then((cache) => {
-                console.log('Service Worker: Caching static assets');
-                return cache.addAll(STATIC_ASSETS);
-            }),
-            // Cache CDN resources
-            caches.open(CDN_CACHE).then((cache) => {
-                console.log('Service Worker: Caching CDN resources');
-                return Promise.all(
-                    CDN_RESOURCES.map(url =>
-                        fetch(url, { mode: 'cors' })
-                            .then(response => cache.put(url, response))
-                            .catch(err => console.warn(`Failed to cache ${url}:`, err))
-                    )
-                );
-            })
-        ]).then(() => {
-            console.log('Service Worker: Installed successfully');
-            return self.skipWaiting();
-        })
+            caches.open(CACHE_NAME).then(cache => cache.addAll(STATIC_ASSETS)),
+            cacheUrls(CDN_CACHE, CDN_RESOURCES, { mode: 'cors' })
+        ]).then(() => self.skipWaiting())
     );
 });
 
-// Activate event - clean up old caches
 self.addEventListener('activate', (event) => {
-    console.log('Service Worker: Activating...');
-
     event.waitUntil(
-        caches.keys().then((cacheNames) => {
-            return Promise.all(
-                cacheNames.map((cacheName) => {
-                    if (cacheName !== CACHE_NAME && cacheName !== CDN_CACHE) {
-                        console.log('Service Worker: Deleting old cache:', cacheName);
-                        return caches.delete(cacheName);
-                    }
-                })
-            );
-        }).then(() => {
-            console.log('Service Worker: Activated successfully');
-            return self.clients.claim();
-        })
+        caches.keys()
+            .then(cacheNames => Promise.all(
+                cacheNames
+                    .filter(name => name !== CACHE_NAME && name !== CDN_CACHE)
+                    .map(name => caches.delete(name))
+            ))
+            .then(() => self.clients.claim())
     );
 });
 
-// Fetch event - serve from cache, fallback to network
 self.addEventListener('fetch', (event) => {
     const { request } = event;
     const url = new URL(request.url);
 
-    // Skip non-GET requests
-    if (request.method !== 'GET') {
-        return;
-    }
+    if (request.method !== 'GET') return;
 
-    // Handle Monaco Editor requests specially
+    // Monaco Editor resources: cache-first for performance
     if (url.hostname === 'cdn.jsdelivr.net' && url.pathname.includes('monaco-editor')) {
-        event.respondWith(
-            caches.match(request).then((cachedResponse) => {
-                if (cachedResponse) {
-                    return cachedResponse;
-                }
-                return fetch(request).then((response) => {
-                    // Cache Monaco resources for offline use
-                    if (response.status === 200) {
-                        const responseClone = response.clone();
-                        caches.open(CDN_CACHE).then((cache) => {
-                            cache.put(request, responseClone);
-                        });
-                    }
-                    return response;
-                });
-            })
-        );
+        event.respondWith(cacheFirstWithUpdate(request, CDN_CACHE));
         return;
     }
 
-    // Network-first strategy for CDN resources
+    // External CDN resources: network-first for freshness
     if (url.hostname !== location.hostname) {
-        event.respondWith(
-            fetch(request)
-                .then((response) => {
-                    // Cache successful responses
-                    if (response.status === 200) {
-                        const responseClone = response.clone();
-                        caches.open(CDN_CACHE).then((cache) => {
-                            cache.put(request, responseClone);
-                        });
-                    }
-                    return response;
-                })
-                .catch(() => {
-                    // Fallback to cache on network error
-                    return caches.match(request);
-                })
-        );
+        event.respondWith(networkFirst(request, CDN_CACHE));
         return;
     }
 
-    // Cache-first strategy for app resources
-    event.respondWith(
-        caches.match(request).then((cachedResponse) => {
-            if (cachedResponse) {
-                // Update cache in background
-                fetch(request).then((response) => {
-                    if (response.status === 200) {
-                        caches.open(CACHE_NAME).then((cache) => {
-                            cache.put(request, response);
-                        });
-                    }
-                }).catch(() => {
-                    // Ignore network errors when cache exists
-                });
-
-                return cachedResponse;
-            }
-
-            // Not in cache, fetch from network
-            return fetch(request).then((response) => {
-                // Cache successful responses
-                if (response.status === 200) {
-                    const responseClone = response.clone();
-                    caches.open(CACHE_NAME).then((cache) => {
-                        cache.put(request, responseClone);
-                    });
-                }
-                return response;
-            });
-        })
-    );
+    // App resources: cache-first with background update
+    event.respondWith(cacheFirstWithUpdate(request, CACHE_NAME));
 });
 
-// Handle messages from clients
 self.addEventListener('message', (event) => {
-    if (event.data && event.data.type === 'SKIP_WAITING') {
+    if (event.data?.type === 'SKIP_WAITING') {
         self.skipWaiting();
     }
 
-    if (event.data && event.data.type === 'CLEAR_CACHE') {
+    if (event.data?.type === 'CLEAR_CACHE') {
         event.waitUntil(
-            caches.keys().then((cacheNames) => {
-                return Promise.all(
-                    cacheNames.map((cacheName) => caches.delete(cacheName))
-                );
-            }).then(() => {
-                event.ports[0].postMessage({ success: true });
-            })
+            caches.keys()
+                .then(cacheNames => Promise.all(cacheNames.map(name => caches.delete(name))))
+                .then(() => event.ports[0].postMessage({ success: true }))
         );
     }
 });

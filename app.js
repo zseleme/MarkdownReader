@@ -1,9 +1,40 @@
-// MDReader Web App
-// Modern Markdown Editor with Live Preview
-
 'use strict';
 
-// ===== CONFIGURATION =====
+// DOMPurify configuration for sanitizing user content
+const DOMPURIFY_CONFIG = {
+    ALLOWED_TAGS: ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'a', 'ul', 'ol', 'li',
+                  'blockquote', 'code', 'pre', 'strong', 'em', 'img', 'table', 'thead',
+                  'tbody', 'tr', 'th', 'td', 'br', 'hr', 'del', 'ins', 'sup', 'sub',
+                  'div', 'span', 'input'],
+    ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'class', 'id', 'type', 'checked', 'disabled'],
+    ALLOW_DATA_ATTR: false
+};
+
+// Autosave interval in milliseconds
+const AUTOSAVE_INTERVAL_MS = 30000;
+
+// Editor initialization timeout in milliseconds
+const EDITOR_INIT_TIMEOUT_MS = 100;
+const EDITOR_MAX_INIT_ATTEMPTS = 50;
+
+// Fetch timeout in milliseconds
+const FETCH_TIMEOUT_MS = 30000;
+
+// Panel resize constraints (percentage)
+const MIN_PANEL_WIDTH_PERCENT = 20;
+const MAX_PANEL_WIDTH_PERCENT = 80;
+
+const renderer = new marked.Renderer();
+renderer.heading = function({ tokens, depth }) {
+    const text = this.parser.parseInline(tokens);
+    const rawText = tokens.map(t => t.raw || t.text || '').join('');
+    const slug = rawText.toLowerCase()
+        .replace(/[^\w\s-]/g, '')
+        .replace(/\s+/g, '-')
+        .trim();
+    return `<h${depth} id="${slug}">${text}</h${depth}>`;
+};
+
 marked.setOptions({
     gfm: true,
     breaks: false,
@@ -12,56 +43,62 @@ marked.setOptions({
     smartLists: true,
     smartypants: false,
     xhtml: true,
-    highlight: function(code, lang) {
-        if (Prism.languages[lang]) {
-            return Prism.highlight(code, Prism.languages[lang], lang);
-        } else {
-            return code;
-        }
-    }
+    renderer: renderer,
+    highlight: (code, lang) => Prism.languages[lang]
+        ? Prism.highlight(code, Prism.languages[lang], lang)
+        : code
 });
 
-// ===== STATE =====
 let tabs = [];
 let activeTabId = null;
 let tabCounter = 0;
-
 let editor = null;
 let currentFilePath = null;
 let isDarkTheme = false;
 let isModified = false;
 let currentFileName = 'Untitled';
 let isResizing = false;
-let viewMode = 'split'; // 'split', 'editor', 'preview'
+let viewMode = 'split';
 let isApplyingEditorContent = false;
 let isSyncScrollEnabled = false;
 let isScrollingEditor = false;
 let isScrollingPreview = false;
-
-// Autosave configuration
 let autoSaveEnabled = true;
-let autoSaveInterval = 30000; // 30 seconds
 let autoSaveTimer = null;
+let autoSaveStatusTimeout = null;
 
-// Feature detection
 const hasFileSystemAccess = 'showOpenFilePicker' in window;
 
-// ===== UTILITY FUNCTIONS =====
+/**
+ * Sanitizes a string for safe HTML display by escaping special characters.
+ * @param {string} str - The string to sanitize
+ * @returns {string} The sanitized string with HTML entities escaped
+ */
+function sanitizeHTML(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
 
+/**
+ * Displays a toast notification to the user.
+ * @param {string} message - The message to display
+ * @param {number} duration - Duration in milliseconds before auto-hide (0 for permanent)
+ */
 function showToast(message, duration = 3000) {
     const toast = document.getElementById('toast');
     toast.textContent = message;
     toast.classList.add('show');
 
-    setTimeout(() => {
-        toast.classList.remove('show');
-    }, duration);
+    if (duration > 0) {
+        setTimeout(() => toast.classList.remove('show'), duration);
+    }
 }
 
-// ===== AUTOSAVE STATUS INDICATOR =====
-
-let autoSaveStatusTimeout = null;
-
+/**
+ * Updates the autosave status indicator in the UI.
+ * @param {'saving' | 'saved' | 'modified' | 'ready'} status - The current save status
+ */
 function updateAutoSaveStatus(status) {
     const indicator = document.getElementById('autosave-indicator');
     const icon = document.getElementById('autosave-icon');
@@ -69,50 +106,53 @@ function updateAutoSaveStatus(status) {
 
     if (!indicator || !icon || !statusText) return;
 
-    // Clear any existing timeout
     if (autoSaveStatusTimeout) {
         clearTimeout(autoSaveStatusTimeout);
         autoSaveStatusTimeout = null;
     }
 
-    // Remove all status classes
     indicator.classList.remove('status-saved', 'status-saving', 'status-modified', 'status-ready');
 
-    switch(status) {
-        case 'saving':
-            indicator.classList.add('status-saving');
-            icon.className = 'fas fa-spinner fa-spin';
-            statusText.textContent = 'Salvando...';
-            break;
+    const statusConfig = {
+        saving: {
+            className: 'status-saving',
+            iconClass: 'fas fa-spinner fa-spin',
+            text: 'Salvando...'
+        },
+        saved: {
+            className: 'status-saved',
+            iconClass: 'fas fa-check-circle',
+            text: 'Todas as alteracoes salvas'
+        },
+        modified: {
+            className: 'status-modified',
+            iconClass: 'fas fa-exclamation-circle',
+            text: 'Alteracoes nao salvas'
+        },
+        ready: {
+            className: 'status-ready',
+            iconClass: 'fas fa-check-circle',
+            text: 'Pronto'
+        }
+    };
 
-        case 'saved':
-            indicator.classList.add('status-saved');
-            icon.className = 'fas fa-check-circle';
-            statusText.textContent = 'Todas as alterações salvas';
+    const config = statusConfig[status] || statusConfig.ready;
+    indicator.classList.add(config.className);
+    icon.className = config.iconClass;
+    statusText.textContent = config.text;
 
-            // After 3 seconds, change to "ready" if still not modified
-            autoSaveStatusTimeout = setTimeout(() => {
-                if (!isModified) {
-                    updateAutoSaveStatus('ready');
-                }
-            }, 3000);
-            break;
-
-        case 'modified':
-            indicator.classList.add('status-modified');
-            icon.className = 'fas fa-exclamation-circle';
-            statusText.textContent = 'Alterações não salvas';
-            break;
-
-        case 'ready':
-        default:
-            indicator.classList.add('status-ready');
-            icon.className = 'fas fa-check-circle';
-            statusText.textContent = 'Pronto';
-            break;
+    if (status === 'saved') {
+        autoSaveStatusTimeout = setTimeout(() => {
+            if (!isModified) {
+                updateAutoSaveStatus('ready');
+            }
+        }, 3000);
     }
 }
 
+/**
+ * Updates the status bar with current editor state information.
+ */
 function updateStatusBar() {
     const statusBar = document.getElementById('status-bar');
     if (!editor) {
@@ -125,19 +165,18 @@ function updateStatusBar() {
     const words = content.trim().split(/\s+/).filter(word => word.length > 0);
     const wordCount = content.trim() === '' ? 0 : words.length;
     const charCount = content.length;
-
     const theme = isDarkTheme ? 'Dark' : 'Light';
     const status = isModified ? 'Modified' : 'Saved';
 
     statusBar.textContent = `${currentFileName} - Line ${position.lineNumber}, Column ${position.column} - ${wordCount} words, ${charCount} chars - ${theme} - ${status}`;
 }
 
-// ===== FILE OPERATIONS =====
-
+/**
+ * Opens a file using the File System Access API or fallback input element.
+ */
 async function openFile() {
     try {
         if (hasFileSystemAccess) {
-            // Modern API (Chrome/Edge)
             const [fileHandle] = await window.showOpenFilePicker({
                 types: [{
                     description: 'Markdown Files',
@@ -156,7 +195,6 @@ async function openFile() {
             showToast('File opened successfully!');
 
         } else {
-            // Fallback for older browsers
             const input = document.createElement('input');
             input.type = 'file';
             input.accept = '.md,.markdown,.txt';
@@ -180,57 +218,56 @@ async function openFile() {
     }
 }
 
+/**
+ * Marks the current tab as saved and updates UI state.
+ * @param {Object} tab - The tab object to update
+ * @param {string} content - The saved content
+ */
+function markTabAsSaved(tab, content) {
+    tab.isModified = false;
+    tab.content = content;
+    isModified = false;
+    updateTabUI(tab);
+    updateStatusBar();
+    updateAutoSaveStatus('saved');
+    saveTabsToLocalStorage();
+}
+
+/**
+ * Saves the current file to disk or localStorage.
+ * @param {boolean} isAutoSave - Whether this is an automatic save operation
+ */
 async function saveFile(isAutoSave = false) {
     const tab = tabs.find(t => t.id === activeTabId);
     if (!tab) return;
 
     const content = editor.getValue();
 
-    // Show saving status
     if (isAutoSave) {
         updateAutoSaveStatus('saving');
     }
 
     try {
         if (tab.fileHandle && hasFileSystemAccess) {
-            // Save to existing file
             const writable = await tab.fileHandle.createWritable();
             await writable.write(content);
             await writable.close();
 
-            tab.isModified = false;
-            tab.content = content;
-            isModified = false;
-            updateTabUI(tab);
-            updateStatusBar();
-            updateAutoSaveStatus('saved');
+            markTabAsSaved(tab, content);
 
             if (!isAutoSave) {
                 showToast('File saved!');
             }
-            saveTabsToLocalStorage();
 
         } else if (hasFileSystemAccess && !isAutoSave) {
-            // Save as new file (only for manual save, not autosave)
             await saveFileAs();
 
         } else {
-            // For autosave without fileHandle, or fallback: save to localStorage
-            if (isAutoSave || !hasFileSystemAccess) {
-                // Just update localStorage for autosave
-                tab.isModified = false;
-                tab.content = content;
-                isModified = false;
-                updateTabUI(tab);
-                updateStatusBar();
-                updateAutoSaveStatus('saved');
-                saveTabsToLocalStorage();
+            markTabAsSaved(tab, content);
 
-                if (!isAutoSave && !hasFileSystemAccess) {
-                    // Fallback: download file for manual save in unsupported browsers
-                    downloadFile(tab.fileName || 'untitled.md', content);
-                    showToast('File downloaded!');
-                }
+            if (!isAutoSave && !hasFileSystemAccess) {
+                downloadFile(tab.fileName || 'untitled.md', content);
+                showToast('File downloaded!');
             }
         }
 
@@ -243,6 +280,9 @@ async function saveFile(isAutoSave = false) {
     }
 }
 
+/**
+ * Saves the current file with a new name/location.
+ */
 async function saveFileAs() {
     const tab = tabs.find(t => t.id === activeTabId);
     if (!tab) return;
@@ -265,30 +305,18 @@ async function saveFileAs() {
 
             tab.fileHandle = handle;
             tab.fileName = handle.name;
-            tab.isModified = false;
-            tab.content = content;
-
             currentFileName = handle.name;
-            isModified = false;
-
-            updateTabUI(tab);
-            updateStatusBar();
+            markTabAsSaved(tab, content);
             showToast('File saved!');
-            saveTabsToLocalStorage();
 
         } else {
-            // Fallback: download
             const filename = prompt('Enter filename:', tab.fileName || 'untitled.md');
             if (filename) {
                 downloadFile(filename, content);
                 tab.fileName = filename;
                 currentFileName = filename;
-                tab.isModified = false;
-                isModified = false;
-                updateTabUI(tab);
-                updateStatusBar();
+                markTabAsSaved(tab, content);
                 showToast('File downloaded!');
-                saveTabsToLocalStorage();
             }
         }
 
@@ -300,6 +328,11 @@ async function saveFileAs() {
     }
 }
 
+/**
+ * Downloads content as a file to the user's device.
+ * @param {string} filename - The name for the downloaded file
+ * @param {string} content - The file content
+ */
 function downloadFile(filename, content) {
     const blob = new Blob([content], { type: 'text/markdown' });
     const url = URL.createObjectURL(blob);
@@ -310,6 +343,9 @@ function downloadFile(filename, content) {
     URL.revokeObjectURL(url);
 }
 
+/**
+ * Exports the current document as a standalone HTML file with embedded styles.
+ */
 async function exportToHTML() {
     try {
         if (!editor) {
@@ -320,12 +356,22 @@ async function exportToHTML() {
         const content = editor.getValue();
         const html = marked.parse(content);
 
+        let cleanHTML, safeFileName;
+        if (typeof DOMPurify !== 'undefined') {
+            cleanHTML = DOMPurify.sanitize(html, DOMPURIFY_CONFIG);
+            safeFileName = DOMPurify.sanitize(currentFileName, { ALLOWED_TAGS: [] });
+        } else {
+            console.warn('DOMPurify not loaded, exported file may be vulnerable to XSS');
+            cleanHTML = html;
+            safeFileName = currentFileName.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+
         const fullHTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>${currentFileName}</title>
+    <title>${safeFileName}</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
@@ -375,7 +421,7 @@ async function exportToHTML() {
     </style>
 </head>
 <body>
-${html}
+${cleanHTML}
 </body>
 </html>`;
 
@@ -389,22 +435,111 @@ ${html}
     }
 }
 
-// ===== TAB MANAGEMENT =====
+/**
+ * Enables inline editing mode for a tab's title.
+ * @param {number} tabId - The ID of the tab to rename
+ * @param {HTMLElement} titleSpan - The span element containing the title
+ */
+function enableInlineRename(tabId, titleSpan) {
+    const tab = tabs.find(t => t.id === tabId);
+    if (!tab) return;
 
+    const currentName = tab.fileName.replace(/\.md$/, '');
+    const originalName = currentName;
+
+    titleSpan.contentEditable = true;
+    titleSpan.textContent = currentName;
+    titleSpan.classList.add('editing');
+
+    titleSpan.focus();
+    const range = document.createRange();
+    range.selectNodeContents(titleSpan);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    const saveRename = () => {
+        let newName = titleSpan.textContent.trim();
+
+        if (!newName || newName === originalName) {
+            titleSpan.contentEditable = false;
+            titleSpan.classList.remove('editing');
+            updateTabUI(tab);
+            return;
+        }
+
+        if (!newName.endsWith('.md')) {
+            newName += '.md';
+        }
+
+        tab.fileName = newName;
+        tab.isModified = true;
+
+        titleSpan.contentEditable = false;
+        titleSpan.classList.remove('editing');
+        updateTabUI(tab);
+
+        if (activeTabId === tabId) {
+            currentFileName = newName;
+            updateStatusBar();
+        }
+
+        saveTabsToLocalStorage();
+        showToast('File renamed to: ' + newName);
+    };
+
+    const cancelRename = () => {
+        titleSpan.contentEditable = false;
+        titleSpan.classList.remove('editing');
+        updateTabUI(tab);
+    };
+
+    const handleKeydown = (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            saveRename();
+            cleanup();
+        } else if (e.key === 'Escape') {
+            e.preventDefault();
+            cancelRename();
+            cleanup();
+        }
+    };
+
+    const handleBlur = () => {
+        saveRename();
+        cleanup();
+    };
+
+    const cleanup = () => {
+        titleSpan.removeEventListener('keydown', handleKeydown);
+        titleSpan.removeEventListener('blur', handleBlur);
+    };
+
+    titleSpan.addEventListener('keydown', handleKeydown);
+    titleSpan.addEventListener('blur', handleBlur);
+}
+
+/**
+ * Creates a new editor tab with optional content and file handle.
+ * @param {string} fileName - The name for the new tab
+ * @param {string} content - Initial content for the tab
+ * @param {FileSystemFileHandle|null} fileHandle - File handle for File System Access API
+ * @param {boolean} skipSave - Whether to skip saving to localStorage
+ */
 function createNewTab(fileName = 'Untitled', content = '', fileHandle = null, skipSave = false) {
     const tabId = ++tabCounter;
 
     const tab = {
         id: tabId,
-        fileName: fileName,
-        content: content,
-        fileHandle: fileHandle,
+        fileName,
+        content,
+        fileHandle,
         isModified: false
     };
 
     tabs.push(tab);
 
-    // Create tab element
     const tabElement = document.createElement('button');
     tabElement.className = 'tab';
     tabElement.dataset.tabId = tabId;
@@ -412,6 +547,17 @@ function createNewTab(fileName = 'Untitled', content = '', fileHandle = null, sk
     const titleSpan = document.createElement('span');
     titleSpan.className = 'tab-title';
     titleSpan.textContent = fileName;
+    titleSpan.title = 'Double-click to rename';
+
+    titleSpan.ondblclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        enableInlineRename(tabId, titleSpan);
+    };
+
+    if (fileName === 'Untitled') {
+        titleSpan.classList.add('untitled');
+    }
 
     const closeBtn = document.createElement('span');
     closeBtn.className = 'tab-close';
@@ -423,7 +569,6 @@ function createNewTab(fileName = 'Untitled', content = '', fileHandle = null, sk
 
     tabElement.appendChild(titleSpan);
     tabElement.appendChild(closeBtn);
-
     tabElement.onclick = () => switchToTab(tabId);
 
     document.getElementById('tabs-list').appendChild(tabElement);
@@ -434,11 +579,14 @@ function createNewTab(fileName = 'Untitled', content = '', fileHandle = null, sk
     }
 }
 
+/**
+ * Switches the editor to display a different tab.
+ * @param {number} tabId - The ID of the tab to switch to
+ */
 function switchToTab(tabId) {
     const tab = tabs.find(t => t.id === tabId);
     if (!tab || !editor) return;
 
-    // Save current tab content
     if (activeTabId !== null) {
         const currentTab = tabs.find(t => t.id === activeTabId);
         if (currentTab) {
@@ -451,59 +599,45 @@ function switchToTab(tabId) {
     currentFilePath = tab.fileHandle ? tab.fileHandle.name : null;
     isModified = tab.isModified;
 
-    // Update editor content
     isApplyingEditorContent = true;
     editor.setValue(tab.content);
     isApplyingEditorContent = false;
 
-    // Update preview
     updatePreview();
 
-    // Update UI
-    document.querySelectorAll('.tab').forEach(el => {
-        el.classList.remove('active');
-    });
+    document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
     const tabElement = document.querySelector(`.tab[data-tab-id="${tabId}"]`);
     if (tabElement) {
         tabElement.classList.add('active');
     }
 
     updateStatusBar();
-
-    // Update autosave status based on tab state
-    if (tab.isModified) {
-        updateAutoSaveStatus('modified');
-    } else {
-        updateAutoSaveStatus('ready');
-    }
-
+    updateAutoSaveStatus(tab.isModified ? 'modified' : 'ready');
     saveTabsToLocalStorage();
 }
 
+/**
+ * Closes a tab, prompting for save if there are unsaved changes.
+ * @param {number} tabId - The ID of the tab to close
+ */
 function closeTab(tabId) {
     const tabIndex = tabs.findIndex(t => t.id === tabId);
     if (tabIndex === -1) return;
 
     const tab = tabs[tabIndex];
 
-    if (tab.isModified) {
-        if (!confirm(`"${tab.fileName}" has unsaved changes. Close anyway?`)) {
-            return;
-        }
+    if (tab.isModified && !confirm(`"${tab.fileName}" has unsaved changes. Close anyway?`)) {
+        return;
     }
 
-    // Remove from array
     tabs.splice(tabIndex, 1);
 
-    // Remove from DOM
     const tabElement = document.querySelector(`.tab[data-tab-id="${tabId}"]`);
     if (tabElement) {
         tabElement.remove();
     }
 
-    // Switch to another tab or clear editor if no tabs left
     if (tabs.length === 0) {
-        // Clear editor and reset state
         activeTabId = null;
         currentFileName = 'Untitled';
         isModified = false;
@@ -522,40 +656,45 @@ function closeTab(tabId) {
     saveTabsToLocalStorage();
 }
 
+/**
+ * Updates the visual representation of a tab in the UI.
+ * @param {Object} tab - The tab object to update
+ */
 function updateTabUI(tab) {
     const tabElement = document.querySelector(`.tab[data-tab-id="${tab.id}"]`);
     if (!tabElement) return;
 
     const titleSpan = tabElement.querySelector('.tab-title');
-    titleSpan.textContent = tab.fileName + (tab.isModified ? ' •' : '');
+    titleSpan.textContent = tab.fileName + (tab.isModified ? ' *' : '');
+    titleSpan.title = 'Double-click to rename';
+
+    if (tab.fileName === 'Untitled') {
+        titleSpan.classList.add('untitled');
+    } else {
+        titleSpan.classList.remove('untitled');
+    }
 }
 
+/**
+ * Updates the active tab's content and modified state based on editor content.
+ */
 function updateActiveTabContent() {
     const tab = tabs.find(t => t.id === activeTabId);
     if (!tab || !editor) return;
 
     const currentContent = editor.getValue();
-
-    // Check if content actually changed from saved state
     const changed = currentContent !== tab.content;
 
-    // Only update if changed
-    if (changed) {
-        tab.isModified = true;
-        isModified = true;
-        updateAutoSaveStatus('modified');
-    } else {
-        tab.isModified = false;
-        isModified = false;
-        updateAutoSaveStatus('ready');
-    }
-
+    tab.isModified = changed;
+    isModified = changed;
+    updateAutoSaveStatus(changed ? 'modified' : 'ready');
     updateTabUI(tab);
     updateStatusBar();
 }
 
-// ===== LOCAL STORAGE =====
-
+/**
+ * Persists all tab data to localStorage.
+ */
 function saveTabsToLocalStorage() {
     try {
         const tabsData = tabs.map(tab => ({
@@ -563,7 +702,6 @@ function saveTabsToLocalStorage() {
             fileName: tab.fileName,
             content: tab.content,
             isModified: tab.isModified
-            // fileHandle cannot be serialized
         }));
 
         localStorage.setItem('mdreader-tabs', JSON.stringify(tabsData));
@@ -574,6 +712,10 @@ function saveTabsToLocalStorage() {
     }
 }
 
+/**
+ * Restores tab data from localStorage.
+ * @returns {boolean} Whether tabs were successfully loaded
+ */
 function loadTabsFromLocalStorage() {
     try {
         const savedTabs = localStorage.getItem('mdreader-tabs');
@@ -589,19 +731,14 @@ function loadTabsFromLocalStorage() {
 
             if (tabsData.length > 0) {
                 tabsData.forEach(tabData => {
-                    // Create tab with restored content, skip save to avoid multiple localStorage writes
                     createNewTab(tabData.fileName, tabData.content, null, true);
                     const tab = tabs[tabs.length - 1];
-
-                    // Only update isModified flag
                     tab.isModified = tabData.isModified;
                     updateTabUI(tab);
                 });
 
-                // Switch to the previously active tab
                 if (savedActiveTab) {
                     const activeId = parseInt(savedActiveTab, 10);
-                    // Find the tab by index instead since IDs have changed
                     const tabIndex = tabsData.findIndex(t => t.id === activeId);
                     if (tabIndex !== -1 && tabs[tabIndex]) {
                         switchToTab(tabs[tabIndex].id);
@@ -622,8 +759,9 @@ function loadTabsFromLocalStorage() {
     return false;
 }
 
-// ===== PREVIEW =====
-
+/**
+ * Renders markdown content to the preview pane with syntax highlighting.
+ */
 function updatePreview() {
     if (!editor) return;
 
@@ -632,18 +770,34 @@ function updatePreview() {
 
     try {
         const html = marked.parse(content);
-        preview.innerHTML = html;
 
-        // Highlight code blocks
+        let cleanHTML;
+        if (typeof DOMPurify !== 'undefined') {
+            cleanHTML = DOMPurify.sanitize(html, DOMPURIFY_CONFIG);
+        } else {
+            console.warn('DOMPurify not loaded, preview may be vulnerable to XSS');
+            cleanHTML = html;
+        }
+
+        preview.innerHTML = cleanHTML;
+
         preview.querySelectorAll('pre code').forEach((block) => {
             Prism.highlightElement(block);
         });
 
-        // Handle links
         preview.querySelectorAll('a').forEach((link) => {
             link.onclick = (e) => {
                 const href = link.getAttribute('href');
-                if (href && !href.startsWith('http')) {
+                if (href && href.startsWith('#')) {
+                    e.preventDefault();
+                    const targetId = href.substring(1);
+                    const targetElement = preview.querySelector(`#${CSS.escape(targetId)}`);
+                    if (targetElement) {
+                        targetElement.scrollIntoView({ behavior: 'smooth' });
+                    } else {
+                        showToast('Section not found');
+                    }
+                } else if (href && !href.startsWith('http')) {
                     e.preventDefault();
                     showToast('Relative links are not supported in web version');
                 }
@@ -652,12 +806,16 @@ function updatePreview() {
 
     } catch (error) {
         console.error('Error rendering markdown:', error);
-        preview.innerHTML = `<p style="color: red;">Error rendering markdown: ${error.message}</p>`;
+        const safeMessage = typeof DOMPurify !== 'undefined'
+            ? DOMPurify.sanitize(error.message)
+            : error.message.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        preview.innerHTML = `<p style="color: red;">Error rendering markdown: ${safeMessage}</p>`;
     }
 }
 
-// ===== MONACO EDITOR INITIALIZATION =====
-
+/**
+ * Initializes the Monaco editor with configuration and event handlers.
+ */
 function initializeEditor() {
     require(['vs/editor/editor.main'], function() {
         const container = document.getElementById('editor');
@@ -678,7 +836,6 @@ function initializeEditor() {
             matchBrackets: 'always'
         });
 
-        // On content change
         editor.onDidChangeModelContent(() => {
             if (!isApplyingEditorContent) {
                 updateActiveTabContent();
@@ -686,12 +843,8 @@ function initializeEditor() {
             }
         });
 
-        // On cursor position change
-        editor.onDidChangeCursorPosition(() => {
-            updateStatusBar();
-        });
+        editor.onDidChangeCursorPosition(() => updateStatusBar());
 
-        // On scroll (for sync scroll)
         editor.onDidScrollChange(() => {
             if (isSyncScrollEnabled && !isScrollingPreview) {
                 isScrollingEditor = true;
@@ -700,7 +853,6 @@ function initializeEditor() {
             }
         });
 
-        // Custom clipboard commands
         editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyC, () => {
             const selection = editor.getSelection();
             const text = editor.getModel().getValueInRange(selection);
@@ -716,13 +868,9 @@ function initializeEditor() {
             const selection = editor.getSelection();
             const text = editor.getModel().getValueInRange(selection);
             await navigator.clipboard.writeText(text);
-            editor.executeEdits('', [{
-                range: selection,
-                text: ''
-            }]);
+            editor.executeEdits('', [{ range: selection, text: '' }]);
         });
 
-        // Initialize app state
         const loaded = loadTabsFromLocalStorage();
         if (!loaded) {
             createNewTab();
@@ -730,41 +878,36 @@ function initializeEditor() {
 
         updatePreview();
         updateStatusBar();
-
-        // Initialize autosave status
         updateAutoSaveStatus('ready');
-
-        // Setup autosave
         setupAutoSave();
-
         showToast('MDReader loaded successfully!');
     });
 }
 
-// ===== AUTOSAVE =====
-
+/**
+ * Sets up the autosave timer to periodically save modified content.
+ */
 function setupAutoSave() {
     if (autoSaveTimer) {
         clearInterval(autoSaveTimer);
     }
 
-    if (!autoSaveEnabled) {
-        return; // Don't start autosave if disabled
-    }
+    if (!autoSaveEnabled) return;
 
     autoSaveTimer = setInterval(() => {
         const tab = tabs.find(t => t.id === activeTabId);
-        if (tab && tab.isModified && autoSaveEnabled) {
-            // Always use saveFile with autosave flag
-            // It will handle file save or localStorage appropriately
+        if (tab?.isModified && autoSaveEnabled) {
             saveFile(true).catch(err => {
                 console.error('Autosave error:', err);
                 updateAutoSaveStatus('modified');
             });
         }
-    }, autoSaveInterval);
+    }, AUTOSAVE_INTERVAL_MS);
 }
 
+/**
+ * Toggles the autosave feature on or off.
+ */
 function toggleAutoSave() {
     autoSaveEnabled = !autoSaveEnabled;
 
@@ -773,7 +916,6 @@ function toggleAutoSave() {
         toggleBtn.setAttribute('aria-pressed', autoSaveEnabled.toString());
     }
 
-    // Save preference to localStorage
     try {
         localStorage.setItem('mdreader-autosave', autoSaveEnabled ? 'enabled' : 'disabled');
     } catch (e) {
@@ -792,8 +934,9 @@ function toggleAutoSave() {
     }
 }
 
-// ===== VIEW MODES =====
-
+/**
+ * Cycles through view modes: split -> editor -> preview -> split.
+ */
 function toggleViewMode() {
     const editorPanel = document.getElementById('editor-panel');
     const previewPanel = document.getElementById('preview-panel');
@@ -801,33 +944,48 @@ function toggleViewMode() {
     const viewModeIcon = document.getElementById('view-mode-icon');
     const viewModeText = document.getElementById('view-mode-text');
 
-    if (viewMode === 'split') {
-        viewMode = 'editor';
-        editorPanel.style.width = '100%';
-        previewPanel.style.display = 'none';
-        resizer.style.display = 'none';
-        viewModeIcon.className = 'fas fa-edit';
-        viewModeText.textContent = 'Editor';
-    } else if (viewMode === 'editor') {
-        viewMode = 'preview';
-        editorPanel.style.display = 'none';
-        previewPanel.style.display = 'block';
-        previewPanel.style.width = '100%';
-        resizer.style.display = 'none';
-        viewModeIcon.className = 'fas fa-eye';
-        viewModeText.textContent = 'Preview';
-    } else {
-        viewMode = 'split';
-        editorPanel.style.display = 'block';
-        editorPanel.style.width = '50%';
-        previewPanel.style.display = 'block';
-        previewPanel.style.width = '50%';
-        resizer.style.display = 'block';
-        viewModeIcon.className = 'fas fa-columns';
-        viewModeText.textContent = 'Split';
-    }
+    const viewModes = {
+        split: {
+            next: 'editor',
+            editor: { display: 'block', width: '50%' },
+            preview: { display: 'block', width: '50%' },
+            resizer: 'block',
+            icon: 'fas fa-columns',
+            text: 'Split'
+        },
+        editor: {
+            next: 'preview',
+            editor: { display: 'block', width: '100%' },
+            preview: { display: 'none', width: '50%' },
+            resizer: 'none',
+            icon: 'fas fa-edit',
+            text: 'Editor'
+        },
+        preview: {
+            next: 'split',
+            editor: { display: 'none', width: '50%' },
+            preview: { display: 'block', width: '100%' },
+            resizer: 'none',
+            icon: 'fas fa-eye',
+            text: 'Preview'
+        }
+    };
+
+    viewMode = viewModes[viewMode].next;
+    const config = viewModes[viewMode];
+
+    editorPanel.style.display = config.editor.display;
+    editorPanel.style.width = config.editor.width;
+    previewPanel.style.display = config.preview.display;
+    previewPanel.style.width = config.preview.width;
+    resizer.style.display = config.resizer;
+    viewModeIcon.className = config.icon;
+    viewModeText.textContent = config.text;
 }
 
+/**
+ * Toggles synchronized scrolling between editor and preview panes.
+ */
 function toggleSyncScroll() {
     isSyncScrollEnabled = !isSyncScrollEnabled;
     const btn = document.getElementById('sync-scroll-toggle');
@@ -844,6 +1002,9 @@ function toggleSyncScroll() {
     }
 }
 
+/**
+ * Synchronizes preview scroll position with editor scroll position.
+ */
 function syncPreviewScroll() {
     if (!editor || !isSyncScrollEnabled) return;
 
@@ -856,18 +1017,14 @@ function syncPreviewScroll() {
     previewPanel.scrollTop = scrollPercent * previewScrollHeight;
 }
 
-// ===== THEME =====
-
+/**
+ * Toggles between light and dark themes.
+ */
 function toggleTheme() {
     isDarkTheme = !isDarkTheme;
 
-    if (isDarkTheme) {
-        document.body.classList.add('dark-theme');
-        document.documentElement.classList.remove('dark-theme-preload');
-    } else {
-        document.body.classList.remove('dark-theme');
-        document.documentElement.classList.remove('dark-theme-preload');
-    }
+    document.body.classList.toggle('dark-theme', isDarkTheme);
+    document.documentElement.classList.remove('dark-theme-preload');
 
     if (editor) {
         monaco.editor.setTheme(isDarkTheme ? 'vs-dark' : 'vs');
@@ -882,15 +1039,16 @@ function toggleTheme() {
     showToast(isDarkTheme ? 'Dark theme enabled' : 'Light theme enabled');
 }
 
-// ===== RESIZER =====
-
+/**
+ * Sets up the panel resizer for adjusting editor/preview split.
+ */
 function setupResizer() {
     const resizer = document.getElementById('resizer');
     const editorPanel = document.getElementById('editor-panel');
     const previewPanel = document.getElementById('preview-panel');
     const container = document.getElementById('main-container');
 
-    resizer.addEventListener('mousedown', (e) => {
+    resizer.addEventListener('mousedown', () => {
         isResizing = true;
         document.body.style.cursor = 'col-resize';
         document.body.style.userSelect = 'none';
@@ -902,7 +1060,7 @@ function setupResizer() {
         const containerRect = container.getBoundingClientRect();
         const newWidth = ((e.clientX - containerRect.left) / containerRect.width) * 100;
 
-        if (newWidth > 20 && newWidth < 80) {
+        if (newWidth > MIN_PANEL_WIDTH_PERCENT && newWidth < MAX_PANEL_WIDTH_PERCENT) {
             editorPanel.style.width = newWidth + '%';
             previewPanel.style.width = (100 - newWidth) + '%';
         }
@@ -917,8 +1075,9 @@ function setupResizer() {
     });
 }
 
-// ===== DRAG AND DROP =====
-
+/**
+ * Sets up drag and drop functionality for opening markdown files.
+ */
 function setupDragDrop() {
     document.body.addEventListener('dragover', (e) => {
         e.preventDefault();
@@ -946,52 +1105,48 @@ function setupDragDrop() {
     });
 }
 
-// ===== KEYBOARD SHORTCUTS =====
-
+/**
+ * Sets up global keyboard shortcuts for the application.
+ */
 function setupKeyboardShortcuts() {
     document.addEventListener('keydown', async (e) => {
-        // Ctrl+S: Save
-        if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+        const isCmdOrCtrl = e.ctrlKey || e.metaKey;
+
+        if (isCmdOrCtrl && e.key === 's' && !e.shiftKey) {
             e.preventDefault();
             await saveFile();
         }
 
-        // Ctrl+Shift+S: Save As
-        if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'S') {
+        if (isCmdOrCtrl && e.shiftKey && e.key === 'S') {
             e.preventDefault();
             await saveFileAs();
         }
 
-        // Ctrl+O: Open
-        if ((e.ctrlKey || e.metaKey) && e.key === 'o') {
+        if (isCmdOrCtrl && e.key === 'o') {
             e.preventDefault();
             await openFile();
         }
 
-        // Ctrl+T: New Tab
-        if ((e.ctrlKey || e.metaKey) && e.key === 't') {
+        if (isCmdOrCtrl && e.key === 't') {
             e.preventDefault();
             createNewTab();
         }
 
-        // Ctrl+W: Close Tab
-        if ((e.ctrlKey || e.metaKey) && e.key === 'w') {
+        if (isCmdOrCtrl && e.key === 'w') {
             e.preventDefault();
             if (activeTabId !== null) {
                 closeTab(activeTabId);
             }
         }
 
-        // Ctrl+Tab: Next Tab
-        if ((e.ctrlKey || e.metaKey) && e.key === 'Tab' && !e.shiftKey) {
+        if (isCmdOrCtrl && e.key === 'Tab' && !e.shiftKey) {
             e.preventDefault();
             const currentIndex = tabs.findIndex(t => t.id === activeTabId);
             const nextIndex = (currentIndex + 1) % tabs.length;
             switchToTab(tabs[nextIndex].id);
         }
 
-        // Ctrl+Shift+Tab: Previous Tab
-        if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'Tab') {
+        if (isCmdOrCtrl && e.shiftKey && e.key === 'Tab') {
             e.preventDefault();
             const currentIndex = tabs.findIndex(t => t.id === activeTabId);
             const prevIndex = (currentIndex - 1 + tabs.length) % tabs.length;
@@ -1000,8 +1155,177 @@ function setupKeyboardShortcuts() {
     });
 }
 
-// ===== EVENT LISTENERS =====
+/**
+ * Performs a fetch request with timeout and enhanced error handling.
+ * @param {string} url - The URL to fetch
+ * @param {RequestInit} options - Fetch options
+ * @param {number} timeout - Timeout in milliseconds
+ * @returns {Promise<Response>} The fetch response
+ * @throws {Error} On timeout, network failure, or HTTP error
+ */
+async function fetchWithTimeout(url, options = {}, timeout = FETCH_TIMEOUT_MS) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
 
+    try {
+        const response = await fetch(url, {
+            ...options,
+            signal: controller.signal
+        });
+
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+            const text = await response.text();
+            let errorMessage;
+
+            try {
+                const data = JSON.parse(text);
+                errorMessage = data.error || `HTTP error ${response.status}`;
+            } catch {
+                errorMessage = `HTTP error ${response.status}: ${text.substring(0, 100)}`;
+            }
+
+            throw new Error(errorMessage);
+        }
+
+        return response;
+
+    } catch (error) {
+        clearTimeout(timeoutId);
+
+        if (error.name === 'AbortError') {
+            throw new Error('Request timeout - server may be slow or unreachable');
+        } else if (!navigator.onLine) {
+            throw new Error('You are offline. Please check your internet connection.');
+        }
+        throw error;
+    }
+}
+
+/**
+ * Saves the current document to the server and copies the shareable URL to clipboard.
+ */
+async function shareDocument() {
+    const tab = tabs.find(t => t.id === activeTabId);
+    if (!tab) return;
+
+    const content = editor.getValue();
+    const title = tab.fileName || 'Untitled';
+
+    try {
+        showToast('Saving to server...');
+
+        const response = await fetchWithTimeout('api/save.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content, title })
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+            if (navigator.clipboard?.writeText) {
+                await navigator.clipboard.writeText(data.url);
+                showToast('Link copied to clipboard! Share: ' + data.url, 8000);
+            } else {
+                prompt('Share this link:', data.url);
+            }
+
+            tab.sharedId = data.id;
+            tab.sharedUrl = data.url;
+
+        } else {
+            throw new Error(data.error || 'Failed to save document');
+        }
+
+    } catch (error) {
+        console.error('Error sharing document:', error);
+        showToast('Error sharing document: ' + error.message, 5000);
+    }
+}
+
+/**
+ * Loads a shared document from the server by its ID.
+ * @param {string} docId - The document ID to load
+ */
+async function loadSharedDocument(docId) {
+    try {
+        showToast('Loading shared document...');
+
+        const response = await fetchWithTimeout(
+            'api/load.php?id=' + encodeURIComponent(docId)
+        );
+
+        const data = await response.json();
+
+        if (data.success) {
+            const fileName = sanitizeHTML(data.title || 'Shared Document');
+            createNewTab(fileName, data.content, null, false);
+
+            const newTab = tabs[tabs.length - 1];
+            newTab.sharedId = docId;
+
+            showToast('Shared document loaded: ' + fileName, 3000);
+
+            const url = new URL(window.location);
+            url.searchParams.set('doc', docId);
+            window.history.replaceState({}, '', url);
+
+        } else {
+            throw new Error(data.error || 'Failed to load document');
+        }
+
+    } catch (error) {
+        console.error('Error loading shared document:', error);
+        showToast('Error loading shared document: ' + error.message, 5000);
+    }
+}
+
+/**
+ * Returns a promise that resolves when the editor is fully initialized.
+ * @returns {Promise<void>}
+ * @throws {Error} If editor fails to initialize within timeout
+ */
+function waitForEditorReady() {
+    return new Promise((resolve, reject) => {
+        let attempts = 0;
+
+        const checkEditor = setInterval(() => {
+            attempts++;
+
+            if (editor?.getValue !== undefined && editor.getModel() !== null) {
+                clearInterval(checkEditor);
+                resolve();
+            } else if (attempts >= EDITOR_MAX_INIT_ATTEMPTS) {
+                clearInterval(checkEditor);
+                reject(new Error('Editor initialization timeout'));
+            }
+        }, EDITOR_INIT_TIMEOUT_MS);
+    });
+}
+
+/**
+ * Checks the URL for a shared document ID parameter and loads it if present.
+ */
+async function checkForSharedDocument() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const docId = urlParams.get('doc');
+
+    if (docId) {
+        try {
+            await waitForEditorReady();
+            loadSharedDocument(docId);
+        } catch (error) {
+            console.error('Failed to load shared document:', error);
+            showToast('Failed to initialize editor', 5000);
+        }
+    }
+}
+
+/**
+ * Sets up all UI event listeners for toolbar buttons and panels.
+ */
 function setupEventListeners() {
     document.getElementById('new-tab-btn').addEventListener('click', () => createNewTab());
     document.getElementById('new-tab-btn-small').addEventListener('click', () => createNewTab());
@@ -1009,12 +1333,12 @@ function setupEventListeners() {
     document.getElementById('save-btn').addEventListener('click', saveFile);
     document.getElementById('save-as-btn').addEventListener('click', saveFileAs);
     document.getElementById('export-html-btn').addEventListener('click', exportToHTML);
+    document.getElementById('share-btn').addEventListener('click', shareDocument);
     document.getElementById('view-mode-toggle').addEventListener('click', toggleViewMode);
     document.getElementById('sync-scroll-toggle').addEventListener('click', toggleSyncScroll);
     document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
     document.getElementById('autosave-toggle').addEventListener('click', toggleAutoSave);
 
-    // Preview scroll sync
     const previewPanel = document.getElementById('preview-panel');
     previewPanel.addEventListener('scroll', () => {
         if (isSyncScrollEnabled && !isScrollingEditor) {
@@ -1024,10 +1348,10 @@ function setupEventListeners() {
     });
 }
 
-// ===== INITIALIZATION =====
-
+/**
+ * Initializes the application: loads preferences, sets up UI, and prepares editor.
+ */
 function init() {
-    // Load theme
     try {
         const savedTheme = localStorage.getItem('mdreader-theme') || 'dark';
         isDarkTheme = savedTheme === 'dark';
@@ -1040,10 +1364,9 @@ function init() {
         console.error('Error loading theme:', e);
     }
 
-    // Load autosave preference
     try {
         const savedAutosave = localStorage.getItem('mdreader-autosave');
-        autoSaveEnabled = savedAutosave !== 'disabled'; // Default to enabled
+        autoSaveEnabled = savedAutosave !== 'disabled';
 
         const toggleBtn = document.getElementById('autosave-toggle');
         if (toggleBtn) {
@@ -1053,42 +1376,31 @@ function init() {
         console.error('Error loading autosave preference:', e);
     }
 
-    // Setup UI
     setupEventListeners();
     setupResizer();
     setupDragDrop();
     setupKeyboardShortcuts();
+    checkForSharedDocument();
 
-    // Display API support message
     if (!hasFileSystemAccess) {
         console.warn('File System Access API not supported. Using fallback methods.');
         showToast('Using fallback file operations (download instead of save)', 5000);
     }
 }
 
-// ===== SERVICE WORKER =====
-
 if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
         navigator.serviceWorker.register('./sw.js')
-            .then(registration => {
-                console.log('Service Worker registered:', registration.scope);
-            })
-            .catch(error => {
-                console.error('Service Worker registration failed:', error);
-            });
+            .then(registration => console.log('Service Worker registered:', registration.scope))
+            .catch(error => console.error('Service Worker registration failed:', error));
     });
 }
 
-// ===== START APP =====
-
-// Wait for Monaco to be ready
 window.addEventListener('monaco-ready', () => {
     init();
     initializeEditor();
 });
 
-// Fallback if Monaco doesn't load
 setTimeout(() => {
     if (!editor) {
         console.error('Monaco failed to initialize');
@@ -1096,7 +1408,6 @@ setTimeout(() => {
     }
 }, 10000);
 
-// Handle page unload
 window.addEventListener('beforeunload', (e) => {
     const hasUnsaved = tabs.some(tab => tab.isModified);
     if (hasUnsaved) {

@@ -1,0 +1,132 @@
+name: Deploy FTP Automático
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+
+jobs:
+  deploy:
+    name: Deploy via FTP
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Definir pasta de destino
+        id: target
+        run: |
+          if [ "${{ github.ref }}" == "refs/heads/main" ]; then
+            echo "folder=/www/md.zaiden.eng.br" >> $GITHUB_OUTPUT
+            echo "environment=Produção" >> $GITHUB_OUTPUT
+            echo "color=green" >> $GITHUB_OUTPUT
+          elif [ "${{ github.ref }}" == "refs/heads/develop" ]; then
+            echo "folder=/www/md-dev.zaiden.eng.br" >> $GITHUB_OUTPUT
+            echo "environment=Desenvolvimento" >> $GITHUB_OUTPUT
+            echo "color=yellow" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Exibir informações do deploy
+        run: |
+          echo "🚀 ================================"
+          echo "🚀 Deploy para ${{ steps.target.outputs.environment }}"
+          echo "🚀 ================================"
+          echo "📁 Pasta destino: ${{ steps.target.outputs.folder }}"
+          echo "🌿 Branch: ${{ github.ref_name }}"
+          echo "📝 Commit: ${{ github.sha }}"
+          echo "👤 Autor: ${{ github.actor }}"
+
+      - name: Gerar informações de deploy
+        run: |
+          # Criar version.json na raiz (será enviado ao servidor)
+          cat > version.json <<EOF
+          {
+            "version": "$(date +%Y.%m.%d-%H%M%S)",
+            "commit": "${{ github.sha }}",
+            "branch": "${{ github.ref_name }}",
+            "deployed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "deployed_by": "${{ github.actor }}",
+            "environment": "${{ steps.target.outputs.environment }}"
+          }
+          EOF
+
+          # Criar pasta deploy-info para logs (não será enviada)
+          mkdir -p deploy-info
+          cp version.json deploy-info/version.json
+
+          cat > deploy-info/LAST_DEPLOY.txt <<EOF
+          ====================================
+          ÚLTIMO DEPLOY
+          ====================================
+          Ambiente: ${{ steps.target.outputs.environment }}
+          Branch: ${{ github.ref_name }}
+          Commit: ${{ github.sha }}
+          Data: $(date)
+          Por: ${{ github.actor }}
+          ====================================
+          EOF
+
+          echo "✅ Arquivo de versão criado"
+          cat version.json
+
+      - name: Deploy via FTP
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.FTP_SERVER }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          server-dir: ${{ steps.target.outputs.folder }}/
+          dangerous-clean-slate: false
+          dry-run: false
+          log-level: verbose
+          state-name: .ftp-deploy-sync-state-${{ github.ref_name }}.json
+          exclude: |
+            **/.git*
+            **/.git*/**
+            **/node_modules/**
+            **/.github/**
+            **/tests/**
+            **/*.md
+            **/.gitignore
+            **/deploy-info/**
+            **/.vscode/**
+            **/.editorconfig
+            **/CLAUDE.md
+
+      - name: Resumo do Deploy
+        if: success()
+        run: |
+          echo "✅ ================================"
+          echo "✅ Deploy concluído com sucesso!"
+          echo "✅ ================================"
+          echo ""
+          echo "📊 Detalhes:"
+          echo "  • Ambiente: ${{ steps.target.outputs.environment }}"
+          echo "  • Pasta: ${{ steps.target.outputs.folder }}"
+          echo "  • Branch: ${{ github.ref_name }}"
+          echo "  • Commit: $(git log -1 --pretty=format:'%h - %s')"
+          echo "  • Arquivos enviados: ✓"
+          echo ""
+          echo "🌐 Acesse:"
+          if [ "${{ steps.target.outputs.environment }}" == "Produção" ]; then
+            echo "  • https://md.zaiden.eng.br/"
+          else
+            echo "  • https://md-dev.zaiden.eng.br/"
+          fi
+
+      - name: Notificar erro
+        if: failure()
+        run: |
+          echo "❌ ================================"
+          echo "❌ Deploy falhou!"
+          echo "❌ ================================"
+          echo ""
+          echo "🔍 Verifique os logs acima para detalhes do erro."
+          echo ""
+          echo "Possíveis causas:"
+          echo "  • Credenciais FTP incorretas"
+          echo "  • Servidor FTP offline"
+          echo "  • Permissões de pasta incorretas"
+          echo "  • Erro na geração do version.json"

@@ -1,34 +1,32 @@
-// Monaco Editor Loader for Web
-// Loads Monaco Editor from CDN and initializes it
+'use strict';
 
+/**
+ * Monaco Editor Loader
+ * Loads Monaco Editor from CDN and dispatches 'monaco-ready' event when complete.
+ */
 (function() {
-    'use strict';
+    const MONACO_VERSION = '0.44.0';
+    const MONACO_CDN_BASE = `https://cdn.jsdelivr.net/npm/monaco-editor@${MONACO_VERSION}/min`;
 
-    // Configure Monaco Environment
     window.MonacoEnvironment = {
         getWorkerUrl: function(workerId, label) {
             return `data:text/javascript;charset=utf-8,${encodeURIComponent(`
                 self.MonacoEnvironment = {
-                    baseUrl: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.44.0/min/'
+                    baseUrl: '${MONACO_CDN_BASE}/'
                 };
-                importScripts('https://cdn.jsdelivr.net/npm/monaco-editor@0.44.0/min/vs/base/worker/workerMain.js');
+                importScripts('${MONACO_CDN_BASE}/vs/base/worker/workerMain.js');
             `)}`;
         }
     };
 
-    // Load Monaco Editor via AMD loader
     const script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/npm/monaco-editor@0.44.0/min/vs/loader.js';
+    script.src = `${MONACO_CDN_BASE}/vs/loader.js`;
     script.async = true;
 
     script.onload = function() {
         require.config({
-            paths: {
-                'vs': 'https://cdn.jsdelivr.net/npm/monaco-editor@0.44.0/min/vs'
-            }
+            paths: { 'vs': `${MONACO_CDN_BASE}/vs` }
         });
-
-        // Trigger Monaco ready event
         window.dispatchEvent(new Event('monaco-ready'));
     };
 
