@@ -24,6 +24,17 @@ const FETCH_TIMEOUT_MS = 30000;
 const MIN_PANEL_WIDTH_PERCENT = 20;
 const MAX_PANEL_WIDTH_PERCENT = 80;
 
+const renderer = new marked.Renderer();
+renderer.heading = function({ tokens, depth }) {
+    const text = this.parser.parseInline(tokens);
+    const rawText = tokens.map(t => t.raw || t.text || '').join('');
+    const slug = rawText.toLowerCase()
+        .replace(/[^\w\s-]/g, '')
+        .replace(/\s+/g, '-')
+        .trim();
+    return `<h${depth} id="${slug}">${text}</h${depth}>`;
+};
+
 marked.setOptions({
     gfm: true,
     breaks: false,
@@ -32,6 +43,7 @@ marked.setOptions({
     smartLists: true,
     smartypants: false,
     xhtml: true,
+    renderer: renderer,
     highlight: (code, lang) => Prism.languages[lang]
         ? Prism.highlight(code, Prism.languages[lang], lang)
         : code
@@ -776,7 +788,16 @@ function updatePreview() {
         preview.querySelectorAll('a').forEach((link) => {
             link.onclick = (e) => {
                 const href = link.getAttribute('href');
-                if (href && !href.startsWith('http')) {
+                if (href && href.startsWith('#')) {
+                    e.preventDefault();
+                    const targetId = href.substring(1);
+                    const targetElement = preview.querySelector(`#${CSS.escape(targetId)}`);
+                    if (targetElement) {
+                        targetElement.scrollIntoView({ behavior: 'smooth' });
+                    } else {
+                        showToast('Section not found');
+                    }
+                } else if (href && !href.startsWith('http')) {
                     e.preventDefault();
                     showToast('Relative links are not supported in web version');
                 }
