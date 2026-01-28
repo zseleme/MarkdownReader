@@ -3,7 +3,7 @@ name: Deploy FTP Automático
 on:
   push:
     branches:
-      - main
+      - master
       - develop
 
 jobs:
@@ -18,7 +18,7 @@ jobs:
       - name: Definir pasta de destino
         id: target
         run: |
-          if [ "${{ github.ref }}" == "refs/heads/main" ]; then
+          if [ "${{ github.ref }}" == "refs/heads/master" ]; then
             echo "folder=/www/md.zaiden.eng.br" >> $GITHUB_OUTPUT
             echo "environment=Produção" >> $GITHUB_OUTPUT
             echo "color=green" >> $GITHUB_OUTPUT
