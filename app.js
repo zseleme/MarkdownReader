@@ -585,7 +585,14 @@ function createNewTab(fileName = 'Untitled', content = '', fileHandle = null, sk
  */
 function switchToTab(tabId) {
     const tab = tabs.find(t => t.id === tabId);
-    if (!tab || !editor) return;
+    if (!tab) {
+        console.warn('switchToTab: tab not found for id:', tabId);
+        return;
+    }
+    if (!editor) {
+        console.warn('switchToTab: editor not initialized yet');
+        return;
+    }
 
     if (activeTabId !== null) {
         const currentTab = tabs.find(t => t.id === activeTabId);
@@ -729,27 +736,31 @@ function loadTabsFromLocalStorage() {
         if (savedTabs) {
             const tabsData = JSON.parse(savedTabs);
 
-            if (tabsData.length > 0) {
+            if (Array.isArray(tabsData) && tabsData.length > 0) {
                 tabsData.forEach(tabData => {
                     createNewTab(tabData.fileName, tabData.content, null, true);
                     const tab = tabs[tabs.length - 1];
-                    tab.isModified = tabData.isModified;
-                    updateTabUI(tab);
+                    if (tab) {
+                        tab.isModified = tabData.isModified;
+                        updateTabUI(tab);
+                    }
                 });
 
-                if (savedActiveTab) {
-                    const activeId = parseInt(savedActiveTab, 10);
-                    const tabIndex = tabsData.findIndex(t => t.id === activeId);
-                    if (tabIndex !== -1 && tabs[tabIndex]) {
-                        switchToTab(tabs[tabIndex].id);
-                    } else if (tabs.length > 0) {
-                        switchToTab(tabs[0].id);
-                    }
-                } else if (tabs.length > 0) {
-                    switchToTab(tabs[0].id);
-                }
+                // Ensure we have tabs before trying to switch
+                if (tabs.length > 0) {
+                    let tabToActivate = tabs[0];
 
-                return true;
+                    if (savedActiveTab) {
+                        const activeId = parseInt(savedActiveTab, 10);
+                        const tabIndex = tabsData.findIndex(t => t.id === activeId);
+                        if (tabIndex !== -1 && tabs[tabIndex]) {
+                            tabToActivate = tabs[tabIndex];
+                        }
+                    }
+
+                    switchToTab(tabToActivate.id);
+                    return true;
+                }
             }
         }
     } catch (e) {
@@ -874,6 +885,15 @@ function initializeEditor() {
         const loaded = loadTabsFromLocalStorage();
         if (!loaded) {
             createNewTab();
+        }
+
+        // Safety check: ensure at least one tab exists and is active
+        if (tabs.length === 0) {
+            console.warn('No tabs after initialization, creating default tab');
+            createNewTab();
+        } else if (activeTabId === null) {
+            console.warn('No active tab after initialization, activating first tab');
+            switchToTab(tabs[0].id);
         }
 
         updatePreview();
