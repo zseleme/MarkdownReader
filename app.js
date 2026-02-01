@@ -63,6 +63,7 @@ let isApplyingEditorContent = false;
 let isSyncScrollEnabled = false;
 let isScrollingEditor = false;
 let isScrollingPreview = false;
+let syncScrollDebounceTimer = null;
 let autoSaveEnabled = true;
 let autoSaveTimer = null;
 let autoSaveStatusTimeout = null;
@@ -860,7 +861,7 @@ function initializeEditor() {
             if (isSyncScrollEnabled && !isScrollingPreview) {
                 isScrollingEditor = true;
                 syncPreviewScroll();
-                setTimeout(() => { isScrollingEditor = false; }, 50);
+                setTimeout(() => { isScrollingEditor = false; }, 100);
             }
         });
 
@@ -1024,17 +1025,131 @@ function toggleSyncScroll() {
 
 /**
  * Synchronizes preview scroll position with editor scroll position.
+ * Uses line-based synchronization for better accuracy.
  */
 function syncPreviewScroll() {
     if (!editor || !isSyncScrollEnabled) return;
 
-    const editorScrollTop = editor.getScrollTop();
-    const editorScrollHeight = editor.getScrollHeight() - editor.getLayoutInfo().height;
-    const scrollPercent = editorScrollTop / editorScrollHeight;
+    // Debounce scroll sync for better performance
+    if (syncScrollDebounceTimer) {
+        clearTimeout(syncScrollDebounceTimer);
+    }
+
+    syncScrollDebounceTimer = setTimeout(() => {
+        performPreviewSync();
+    }, 16); // ~60fps
+}
+
+/**
+ * Performs the actual preview synchronization.
+ */
+function performPreviewSync() {
+    if (!editor || !isSyncScrollEnabled) return;
 
     const previewPanel = document.getElementById('preview-panel');
+    const preview = document.getElementById('preview');
+
+    // Get visible line range in editor
+    const visibleRanges = editor.getVisibleRanges();
+    if (!visibleRanges || visibleRanges.length === 0) return;
+
+    const firstVisibleLine = visibleRanges[0].startLineNumber;
+    const totalLines = editor.getModel().getLineCount();
+
+    if (totalLines <= 1) return;
+
+    // Get all block-level elements in preview (including nested li elements)
+    const blockElements = preview.querySelectorAll('h1, h2, h3, h4, h5, h6, p, pre, li, blockquote, table, hr, img');
+    if (blockElements.length === 0) {
+        // Fallback to percentage-based scroll
+        const editorScrollTop = editor.getScrollTop();
+        const editorScrollHeight = editor.getScrollHeight() - editor.getLayoutInfo().height;
+        if (editorScrollHeight > 0) {
+            const scrollPercent = editorScrollTop / editorScrollHeight;
+            const previewScrollHeight = previewPanel.scrollHeight - previewPanel.clientHeight;
+            previewPanel.scrollTop = scrollPercent * previewScrollHeight;
+        }
+        return;
+    }
+
+    // Calculate scroll position based on line ratio with interpolation
+    const lineRatio = (firstVisibleLine - 1) / Math.max(1, totalLines - 1);
+
+    // Use weighted average between element-based and percentage-based scrolling
+    const elementIndex = lineRatio * (blockElements.length - 1);
+    const lowerIndex = Math.floor(elementIndex);
+    const upperIndex = Math.min(lowerIndex + 1, blockElements.length - 1);
+    const interpolation = elementIndex - lowerIndex;
+
+    const previewRect = preview.getBoundingClientRect();
+
+    // Get positions of both elements for interpolation
+    const lowerElement = blockElements[lowerIndex];
+    const upperElement = blockElements[upperIndex];
+
+    const lowerOffset = lowerElement.getBoundingClientRect().top - previewRect.top + previewPanel.scrollTop;
+    const upperOffset = upperElement.getBoundingClientRect().top - previewRect.top + previewPanel.scrollTop;
+
+    // Interpolate between elements for smoother scrolling
+    const targetScroll = Math.max(0, lowerOffset + (upperOffset - lowerOffset) * interpolation - 10);
+
+    // Apply scroll with minimal visual jump
+    const scrollDiff = Math.abs(previewPanel.scrollTop - targetScroll);
+    if (scrollDiff > 5) { // Only scroll if difference is noticeable
+        previewPanel.scrollTop = targetScroll;
+    }
+}
+
+/**
+ * Synchronizes editor scroll position with preview scroll position.
+ * Uses element-based synchronization for better accuracy.
+ */
+function syncEditorScroll() {
+    if (!editor || !isSyncScrollEnabled) return;
+
+    const previewPanel = document.getElementById('preview-panel');
+    const preview = document.getElementById('preview');
+
+    const previewScrollTop = previewPanel.scrollTop;
     const previewScrollHeight = previewPanel.scrollHeight - previewPanel.clientHeight;
-    previewPanel.scrollTop = scrollPercent * previewScrollHeight;
+
+    if (previewScrollHeight <= 0) return;
+
+    // Get all block-level elements in preview
+    const blockElements = preview.querySelectorAll('h1, h2, h3, h4, h5, h6, p, pre, li, blockquote, table, hr, img');
+    if (blockElements.length === 0) return;
+
+    const previewRect = preview.getBoundingClientRect();
+
+    // Find visible element with interpolation
+    let visibleElementIndex = 0;
+    let elementProgress = 0;
+
+    for (let i = 0; i < blockElements.length; i++) {
+        const elementRect = blockElements[i].getBoundingClientRect();
+        const elementOffsetTop = elementRect.top - previewRect.top + previewPanel.scrollTop;
+        const nextElementOffset = i < blockElements.length - 1
+            ? blockElements[i + 1].getBoundingClientRect().top - previewRect.top + previewPanel.scrollTop
+            : previewScrollHeight;
+
+        if (previewScrollTop >= elementOffsetTop && previewScrollTop < nextElementOffset) {
+            visibleElementIndex = i;
+            const range = nextElementOffset - elementOffsetTop;
+            elementProgress = range > 0 ? (previewScrollTop - elementOffsetTop) / range : 0;
+            break;
+        } else if (elementOffsetTop > previewScrollTop) {
+            break;
+        }
+        visibleElementIndex = i;
+    }
+
+    // Map element index back to editor line with interpolation
+    const totalLines = editor.getModel().getLineCount();
+    const lineRatio = (visibleElementIndex + elementProgress) / Math.max(1, blockElements.length - 1);
+    const targetLine = Math.max(1, Math.min(totalLines, Math.round(lineRatio * (totalLines - 1)) + 1));
+
+    // Scroll editor to target line (near top of viewport)
+    editor.revealLineInCenterIfOutsideViewport(targetLine);
 }
 
 /**
@@ -1268,6 +1383,7 @@ async function shareDocument() {
 /**
  * Loads a shared document from the server by its ID.
  * @param {string} docId - The document ID to load
+ * @returns {Promise<boolean>} Whether the document was loaded successfully
  */
 async function loadSharedDocument(docId) {
     try {
@@ -1292,6 +1408,8 @@ async function loadSharedDocument(docId) {
             url.searchParams.set('doc', docId);
             window.history.replaceState({}, '', url);
 
+            return true;
+
         } else {
             throw new Error(data.error || 'Failed to load document');
         }
@@ -1299,6 +1417,7 @@ async function loadSharedDocument(docId) {
     } catch (error) {
         console.error('Error loading shared document:', error);
         showToast('Error loading shared document: ' + error.message, 5000);
+        return false;
     }
 }
 
@@ -1326,16 +1445,45 @@ function waitForEditorReady() {
 }
 
 /**
- * Checks the URL for a shared document ID parameter and loads it if present.
+ * Checks if there's a shared document ID in the URL.
+ * @returns {string|null} The document ID or null if not present
  */
-async function checkForSharedDocument() {
+function getSharedDocumentId() {
     const urlParams = new URLSearchParams(window.location.search);
-    const docId = urlParams.get('doc');
+    return urlParams.get('doc');
+}
+
+/**
+ * Checks the URL for a shared document ID parameter and loads it if present.
+ * @param {boolean} isInitialLoad - Whether this is the initial page load
+ */
+async function checkForSharedDocument(isInitialLoad = false) {
+    const docId = getSharedDocumentId();
 
     if (docId) {
         try {
             await waitForEditorReady();
-            loadSharedDocument(docId);
+
+            // If this is the initial load and there's only an empty default tab,
+            // we'll remove it after successfully loading the shared document
+            const hasOnlyDefaultTab = isInitialLoad && tabs.length === 1 &&
+                tabs[0].fileName === 'Untitled' && tabs[0].content === '';
+            const defaultTabId = hasOnlyDefaultTab ? tabs[0].id : null;
+
+            const loaded = await loadSharedDocument(docId);
+
+            // Remove the empty default tab if shared document loaded successfully
+            if (loaded && defaultTabId !== null && tabs.length > 1) {
+                const defaultTab = tabs.find(t => t.id === defaultTabId);
+                if (defaultTab && defaultTab.id !== activeTabId) {
+                    const tabElement = document.querySelector(`.tab[data-tab-id="${defaultTab.id}"]`);
+                    if (tabElement) {
+                        tabElement.remove();
+                    }
+                    tabs = tabs.filter(t => t.id !== defaultTabId);
+                    saveTabsToLocalStorage();
+                }
+            }
         } catch (error) {
             console.error('Failed to load shared document:', error);
             showToast('Failed to initialize editor', 5000);
@@ -1363,7 +1511,8 @@ function setupEventListeners() {
     previewPanel.addEventListener('scroll', () => {
         if (isSyncScrollEnabled && !isScrollingEditor) {
             isScrollingPreview = true;
-            setTimeout(() => { isScrollingPreview = false; }, 50);
+            syncEditorScroll();
+            setTimeout(() => { isScrollingPreview = false; }, 100);
         }
     });
 }
@@ -1400,7 +1549,7 @@ function init() {
     setupResizer();
     setupDragDrop();
     setupKeyboardShortcuts();
-    checkForSharedDocument();
+    checkForSharedDocument(true);
 
     if (!hasFileSystemAccess) {
         console.warn('File System Access API not supported. Using fallback methods.');
