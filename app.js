@@ -24,15 +24,79 @@ const FETCH_TIMEOUT_MS = 30000;
 const MIN_PANEL_WIDTH_PERCENT = 20;
 const MAX_PANEL_WIDTH_PERCENT = 80;
 
+// Track current line number during markdown parsing
+let currentSourceLine = 1;
+
 const renderer = new marked.Renderer();
-renderer.heading = function({ tokens, depth }) {
+
+renderer.heading = function({ tokens, depth, raw }) {
     const text = this.parser.parseInline(tokens);
     const rawText = tokens.map(t => t.raw || t.text || '').join('');
     const slug = rawText.toLowerCase()
         .replace(/[^\w\s-]/g, '')
         .replace(/\s+/g, '-')
         .trim();
-    return `<h${depth} id="${slug}">${text}</h${depth}>`;
+    return `<h${depth} id="${slug}" data-line="${currentSourceLine}">${text}</h${depth}>`;
+};
+
+renderer.paragraph = function({ tokens }) {
+    const text = this.parser.parseInline(tokens);
+    return `<p data-line="${currentSourceLine}">${text}</p>\n`;
+};
+
+renderer.code = function({ text, lang }) {
+    const language = lang || '';
+    const highlighted = Prism.languages[language]
+        ? Prism.highlight(text, Prism.languages[language], language)
+        : text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return `<pre data-line="${currentSourceLine}"><code class="language-${language}">${highlighted}</code></pre>\n`;
+};
+
+renderer.blockquote = function({ tokens }) {
+    const body = this.parser.parse(tokens);
+    return `<blockquote data-line="${currentSourceLine}">${body}</blockquote>\n`;
+};
+
+renderer.list = function({ items, ordered, start }) {
+    const tag = ordered ? 'ol' : 'ul';
+    const startAttr = ordered && start !== 1 ? ` start="${start}"` : '';
+    let body = '';
+    for (const item of items) {
+        body += this.listitem(item);
+    }
+    return `<${tag}${startAttr} data-line="${currentSourceLine}">${body}</${tag}>\n`;
+};
+
+renderer.listitem = function({ tokens, task, checked }) {
+    let text = this.parser.parse(tokens);
+    if (task) {
+        const checkbox = `<input type="checkbox" ${checked ? 'checked' : ''} disabled>`;
+        text = checkbox + text;
+    }
+    return `<li>${text}</li>\n`;
+};
+
+renderer.table = function({ header, rows }) {
+    let output = `<table data-line="${currentSourceLine}"><thead><tr>`;
+    for (const cell of header) {
+        const align = cell.align ? ` style="text-align:${cell.align}"` : '';
+        output += `<th${align}>${this.parser.parseInline(cell.tokens)}</th>`;
+    }
+    output += '</tr></thead><tbody>';
+    for (const row of rows) {
+        output += '<tr>';
+        for (const cell of row) {
+            const align = cell.align ? ` style="text-align:${cell.align}"` : '';
+            output += `<td${align}>${this.parser.parseInline(cell.tokens)}</td>`;
+        }
+        output += '</tr>';
+    }
+    output += '</tbody></table>\n';
+    return output;
+};
+
+renderer.hr = function() {
+    return `<hr data-line="${currentSourceLine}" />\n`;
 };
 
 marked.setOptions({
@@ -43,10 +107,7 @@ marked.setOptions({
     smartLists: true,
     smartypants: false,
     xhtml: true,
-    renderer: renderer,
-    highlight: (code, lang) => Prism.languages[lang]
-        ? Prism.highlight(code, Prism.languages[lang], lang)
-        : code
+    renderer: renderer
 });
 
 let tabs = [];
@@ -63,6 +124,9 @@ let isApplyingEditorContent = false;
 let isSyncScrollEnabled = false;
 let isScrollingEditor = false;
 let isScrollingPreview = false;
+let syncScrollDebounceTimer = null;
+let previewDebounceTimer = null;
+let contentChangeDebounceTimer = null;
 let autoSaveEnabled = true;
 let autoSaveTimer = null;
 let autoSaveStatusTimeout = null;
@@ -154,9 +218,9 @@ function updateAutoSaveStatus(status) {
  * Updates the status bar with current editor state information.
  */
 function updateStatusBar() {
-    const statusBar = document.getElementById('status-bar');
+    const statusInfo = document.getElementById('status-info');
     if (!editor) {
-        statusBar.textContent = 'Loading...';
+        statusInfo.textContent = 'Loading...';
         return;
     }
 
@@ -168,7 +232,37 @@ function updateStatusBar() {
     const theme = isDarkTheme ? 'Dark' : 'Light';
     const status = isModified ? 'Modified' : 'Saved';
 
-    statusBar.textContent = `${currentFileName} - Line ${position.lineNumber}, Column ${position.column} - ${wordCount} words, ${charCount} chars - ${theme} - ${status}`;
+    statusInfo.textContent = `${currentFileName} - Line ${position.lineNumber}, Column ${position.column} - ${wordCount} words, ${charCount} chars - ${theme} - ${status}`;
+}
+
+/**
+ * Fetches and displays the application version from version.json.
+ */
+async function loadVersion() {
+    const versionElement = document.getElementById('status-version');
+    try {
+        const response = await fetch('./version.json?t=' + Date.now());
+        if (response.ok) {
+            const data = await response.json();
+            const version = data.version || 'dev';
+            const branch = data.branch || '';
+            const shortCommit = data.commit ? data.commit.substring(0, 7) : '';
+
+            if (branch === 'develop') {
+                versionElement.textContent = `v${version} (dev)`;
+                versionElement.title = `Branch: ${branch}\nCommit: ${shortCommit}\nDeployed: ${data.deployed_at || 'N/A'}`;
+            } else {
+                versionElement.textContent = `v${version}`;
+                versionElement.title = `Commit: ${shortCommit}\nDeployed: ${data.deployed_at || 'N/A'}`;
+            }
+        } else {
+            versionElement.textContent = 'vLocal';
+            versionElement.title = 'Running locally';
+        }
+    } catch {
+        versionElement.textContent = 'vLocal';
+        versionElement.title = 'Running locally';
+    }
 }
 
 /**
@@ -585,7 +679,14 @@ function createNewTab(fileName = 'Untitled', content = '', fileHandle = null, sk
  */
 function switchToTab(tabId) {
     const tab = tabs.find(t => t.id === tabId);
-    if (!tab || !editor) return;
+    if (!tab) {
+        console.warn('switchToTab: tab not found for id:', tabId);
+        return;
+    }
+    if (!editor) {
+        console.warn('switchToTab: editor not initialized yet');
+        return;
+    }
 
     if (activeTabId !== null) {
         const currentTab = tabs.find(t => t.id === activeTabId);
@@ -677,18 +778,20 @@ function updateTabUI(tab) {
 
 /**
  * Updates the active tab's content and modified state based on editor content.
+ * Optimized to avoid expensive operations on every keystroke.
  */
 function updateActiveTabContent() {
     const tab = tabs.find(t => t.id === activeTabId);
     if (!tab || !editor) return;
 
-    const currentContent = editor.getValue();
-    const changed = currentContent !== tab.content;
-
-    tab.isModified = changed;
-    isModified = changed;
-    updateAutoSaveStatus(changed ? 'modified' : 'ready');
-    updateTabUI(tab);
+    // Mark as modified without expensive comparison
+    // Full comparison only needed when explicitly checking (e.g., before close)
+    if (!tab.isModified) {
+        tab.isModified = true;
+        isModified = true;
+        updateAutoSaveStatus('modified');
+        updateTabUI(tab);
+    }
     updateStatusBar();
 }
 
@@ -729,27 +832,31 @@ function loadTabsFromLocalStorage() {
         if (savedTabs) {
             const tabsData = JSON.parse(savedTabs);
 
-            if (tabsData.length > 0) {
+            if (Array.isArray(tabsData) && tabsData.length > 0) {
                 tabsData.forEach(tabData => {
                     createNewTab(tabData.fileName, tabData.content, null, true);
                     const tab = tabs[tabs.length - 1];
-                    tab.isModified = tabData.isModified;
-                    updateTabUI(tab);
+                    if (tab) {
+                        tab.isModified = tabData.isModified;
+                        updateTabUI(tab);
+                    }
                 });
 
-                if (savedActiveTab) {
-                    const activeId = parseInt(savedActiveTab, 10);
-                    const tabIndex = tabsData.findIndex(t => t.id === activeId);
-                    if (tabIndex !== -1 && tabs[tabIndex]) {
-                        switchToTab(tabs[tabIndex].id);
-                    } else if (tabs.length > 0) {
-                        switchToTab(tabs[0].id);
-                    }
-                } else if (tabs.length > 0) {
-                    switchToTab(tabs[0].id);
-                }
+                // Ensure we have tabs before trying to switch
+                if (tabs.length > 0) {
+                    let tabToActivate = tabs[0];
 
-                return true;
+                    if (savedActiveTab) {
+                        const activeId = parseInt(savedActiveTab, 10);
+                        const tabIndex = tabsData.findIndex(t => t.id === activeId);
+                        if (tabIndex !== -1 && tabs[tabIndex]) {
+                            tabToActivate = tabs[tabIndex];
+                        }
+                    }
+
+                    switchToTab(tabToActivate.id);
+                    return true;
+                }
             }
         }
     } catch (e) {
@@ -760,20 +867,69 @@ function loadTabsFromLocalStorage() {
 }
 
 /**
- * Renders markdown content to the preview pane with syntax highlighting.
+ * Renders markdown content to the preview pane with syntax mapping for scroll sync.
+ * Uses debouncing to prevent UI freezing on large documents.
  */
 function updatePreview() {
     if (!editor) return;
 
+    // Debounce preview updates for large content
+    if (previewDebounceTimer) {
+        clearTimeout(previewDebounceTimer);
+    }
+
     const content = editor.getValue();
+
+    // For large content, use longer debounce
+    const debounceMs = content.length > 50000 ? 300 : content.length > 10000 ? 150 : 50;
+
+    previewDebounceTimer = setTimeout(() => {
+        performPreviewUpdate(content);
+    }, debounceMs);
+}
+
+/**
+ * Performs the actual preview rendering.
+ * @param {string} content - The markdown content to render
+ */
+function performPreviewUpdate(content) {
     const preview = document.getElementById('preview');
 
     try {
-        const html = marked.parse(content);
+        // Use lexer to get tokens with line information
+        const tokens = marked.lexer(content);
+
+        // Build HTML with line numbers - O(n) algorithm using position tracking
+        let html = '';
+        let searchPos = 0;
+
+        for (const token of tokens) {
+            if (token.raw) {
+                // Find position of this token starting from last position
+                const tokenPos = content.indexOf(token.raw, searchPos);
+                if (tokenPos !== -1) {
+                    // Count newlines only in the substring we haven't processed
+                    const segment = content.substring(searchPos, tokenPos);
+                    const newlines = (segment.match(/\n/g) || []).length;
+                    currentSourceLine += newlines;
+                    searchPos = tokenPos + token.raw.length;
+                }
+            }
+
+            // Parse this token to HTML
+            html += marked.parser([token]);
+        }
+
+        // Reset line counter for next update
+        currentSourceLine = 1;
 
         let cleanHTML;
         if (typeof DOMPurify !== 'undefined') {
-            cleanHTML = DOMPurify.sanitize(html, DOMPURIFY_CONFIG);
+            const config = {
+                ...DOMPURIFY_CONFIG,
+                ALLOWED_ATTR: [...DOMPURIFY_CONFIG.ALLOWED_ATTR, 'data-line']
+            };
+            cleanHTML = DOMPurify.sanitize(html, config);
         } else {
             console.warn('DOMPurify not loaded, preview may be vulnerable to XSS');
             cleanHTML = html;
@@ -781,10 +937,7 @@ function updatePreview() {
 
         preview.innerHTML = cleanHTML;
 
-        preview.querySelectorAll('pre code').forEach((block) => {
-            Prism.highlightElement(block);
-        });
-
+        // Setup link handlers
         preview.querySelectorAll('a').forEach((link) => {
             link.onclick = (e) => {
                 const href = link.getAttribute('href');
@@ -817,6 +970,12 @@ function updatePreview() {
  * Initializes the Monaco editor with configuration and event handlers.
  */
 function initializeEditor() {
+    if (typeof require === 'undefined') {
+        console.error('AMD require is not defined');
+        showToast('Failed to load editor: AMD loader not available', 0);
+        return;
+    }
+
     require(['vs/editor/editor.main'], function() {
         const container = document.getElementById('editor');
 
@@ -833,12 +992,19 @@ function initializeEditor() {
             scrollBeyondLastLine: false,
             folding: true,
             links: true,
-            matchBrackets: 'always'
+            matchBrackets: 'always',
+            stickyScroll: { enabled: true }
         });
 
         editor.onDidChangeModelContent(() => {
             if (!isApplyingEditorContent) {
-                updateActiveTabContent();
+                // Debounce content change handling for better performance with large pastes
+                if (contentChangeDebounceTimer) {
+                    clearTimeout(contentChangeDebounceTimer);
+                }
+                contentChangeDebounceTimer = setTimeout(() => {
+                    updateActiveTabContent();
+                }, 100);
                 updatePreview();
             }
         });
@@ -849,7 +1015,7 @@ function initializeEditor() {
             if (isSyncScrollEnabled && !isScrollingPreview) {
                 isScrollingEditor = true;
                 syncPreviewScroll();
-                setTimeout(() => { isScrollingEditor = false; }, 50);
+                setTimeout(() => { isScrollingEditor = false; }, 100);
             }
         });
 
@@ -861,7 +1027,12 @@ function initializeEditor() {
 
         editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyV, async () => {
             const text = await navigator.clipboard.readText();
-            editor.trigger('keyboard', 'type', { text });
+            const selection = editor.getSelection();
+            editor.executeEdits('paste', [{
+                range: selection,
+                text: text,
+                forceMoveMarkers: true
+            }]);
         });
 
         editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyX, async () => {
@@ -876,11 +1047,23 @@ function initializeEditor() {
             createNewTab();
         }
 
+        // Safety check: ensure at least one tab exists and is active
+        if (tabs.length === 0) {
+            console.warn('No tabs after initialization, creating default tab');
+            createNewTab();
+        } else if (activeTabId === null) {
+            console.warn('No active tab after initialization, activating first tab');
+            switchToTab(tabs[0].id);
+        }
+
         updatePreview();
         updateStatusBar();
         updateAutoSaveStatus('ready');
         setupAutoSave();
         showToast('MDReader loaded successfully!');
+    }, function(err) {
+        console.error('Failed to load Monaco editor modules:', err);
+        showToast('Failed to load editor modules. Please refresh the page.', 0);
     });
 }
 
@@ -1004,17 +1187,164 @@ function toggleSyncScroll() {
 
 /**
  * Synchronizes preview scroll position with editor scroll position.
+ * Uses source line mapping for accurate synchronization.
  */
 function syncPreviewScroll() {
     if (!editor || !isSyncScrollEnabled) return;
 
-    const editorScrollTop = editor.getScrollTop();
-    const editorScrollHeight = editor.getScrollHeight() - editor.getLayoutInfo().height;
-    const scrollPercent = editorScrollTop / editorScrollHeight;
+    // Debounce scroll sync for better performance
+    if (syncScrollDebounceTimer) {
+        clearTimeout(syncScrollDebounceTimer);
+    }
+
+    syncScrollDebounceTimer = setTimeout(() => {
+        performPreviewSync();
+    }, 16); // ~60fps
+}
+
+/**
+ * Performs the actual preview synchronization using data-line attributes.
+ */
+function performPreviewSync() {
+    if (!editor || !isSyncScrollEnabled) return;
 
     const previewPanel = document.getElementById('preview-panel');
-    const previewScrollHeight = previewPanel.scrollHeight - previewPanel.clientHeight;
-    previewPanel.scrollTop = scrollPercent * previewScrollHeight;
+    const preview = document.getElementById('preview');
+
+    // Get visible line range in editor
+    const visibleRanges = editor.getVisibleRanges();
+    if (!visibleRanges || visibleRanges.length === 0) return;
+
+    const firstVisibleLine = visibleRanges[0].startLineNumber;
+
+    // Find elements with data-line attributes
+    const lineElements = preview.querySelectorAll('[data-line]');
+    if (lineElements.length === 0) {
+        // Fallback to percentage-based scroll
+        const editorScrollTop = editor.getScrollTop();
+        const editorScrollHeight = editor.getScrollHeight() - editor.getLayoutInfo().height;
+        if (editorScrollHeight > 0) {
+            const scrollPercent = editorScrollTop / editorScrollHeight;
+            const previewScrollHeight = previewPanel.scrollHeight - previewPanel.clientHeight;
+            previewPanel.scrollTop = scrollPercent * previewScrollHeight;
+        }
+        return;
+    }
+
+    // Find the element that corresponds to the visible line
+    let targetElement = null;
+    let nextElement = null;
+
+    for (let i = 0; i < lineElements.length; i++) {
+        const elementLine = parseInt(lineElements[i].getAttribute('data-line'), 10);
+        if (elementLine <= firstVisibleLine) {
+            targetElement = lineElements[i];
+            nextElement = lineElements[i + 1] || null;
+        } else {
+            if (!targetElement) {
+                targetElement = lineElements[i];
+            }
+            break;
+        }
+    }
+
+    if (!targetElement) return;
+
+    const previewRect = preview.getBoundingClientRect();
+    const elementRect = targetElement.getBoundingClientRect();
+    const elementTop = elementRect.top - previewRect.top + previewPanel.scrollTop;
+
+    // Calculate interpolation within the element
+    const elementLine = parseInt(targetElement.getAttribute('data-line'), 10);
+    let interpolation = 0;
+
+    if (nextElement) {
+        const nextLine = parseInt(nextElement.getAttribute('data-line'), 10);
+        const nextRect = nextElement.getBoundingClientRect();
+        const nextTop = nextRect.top - previewRect.top + previewPanel.scrollTop;
+
+        if (nextLine > elementLine) {
+            const lineProgress = (firstVisibleLine - elementLine) / (nextLine - elementLine);
+            interpolation = lineProgress * (nextTop - elementTop);
+        }
+    }
+
+    const targetScroll = Math.max(0, elementTop + interpolation - 20);
+
+    // Apply scroll smoothly
+    const scrollDiff = Math.abs(previewPanel.scrollTop - targetScroll);
+    if (scrollDiff > 3) {
+        previewPanel.scrollTop = targetScroll;
+    }
+}
+
+/**
+ * Synchronizes editor scroll position with preview scroll position.
+ * Uses data-line attributes for accurate reverse mapping.
+ */
+function syncEditorScroll() {
+    if (!editor || !isSyncScrollEnabled) return;
+
+    const previewPanel = document.getElementById('preview-panel');
+    const preview = document.getElementById('preview');
+
+    const previewScrollTop = previewPanel.scrollTop;
+
+    // Find elements with data-line attributes
+    const lineElements = preview.querySelectorAll('[data-line]');
+    if (lineElements.length === 0) return;
+
+    const previewRect = preview.getBoundingClientRect();
+
+    // Find the element at the current scroll position
+    let targetElement = null;
+    let nextElement = null;
+
+    for (let i = 0; i < lineElements.length; i++) {
+        const elementRect = lineElements[i].getBoundingClientRect();
+        const elementTop = elementRect.top - previewRect.top + previewPanel.scrollTop;
+
+        if (elementTop <= previewScrollTop + 50) {
+            targetElement = lineElements[i];
+            nextElement = lineElements[i + 1] || null;
+        } else {
+            break;
+        }
+    }
+
+    if (!targetElement) {
+        targetElement = lineElements[0];
+    }
+
+    const targetLine = parseInt(targetElement.getAttribute('data-line'), 10);
+
+    // Calculate interpolation
+    let interpolatedLine = targetLine;
+
+    if (nextElement) {
+        const nextLine = parseInt(nextElement.getAttribute('data-line'), 10);
+        const elementRect = targetElement.getBoundingClientRect();
+        const nextRect = nextElement.getBoundingClientRect();
+        const elementTop = elementRect.top - previewRect.top + previewPanel.scrollTop;
+        const nextTop = nextRect.top - previewRect.top + previewPanel.scrollTop;
+
+        if (nextTop > elementTop) {
+            const progress = (previewScrollTop - elementTop) / (nextTop - elementTop);
+            interpolatedLine = targetLine + progress * (nextLine - targetLine);
+        }
+    }
+
+    const finalLine = Math.max(1, Math.round(interpolatedLine));
+
+    // Only scroll if the line is not already visible
+    const visibleRanges = editor.getVisibleRanges();
+    if (visibleRanges && visibleRanges.length > 0) {
+        const start = visibleRanges[0].startLineNumber;
+        const end = visibleRanges[0].endLineNumber;
+        if (finalLine < start || finalLine > end) {
+            editor.revealLineInCenter(finalLine);
+        }
+    }
 }
 
 /**
@@ -1248,6 +1578,7 @@ async function shareDocument() {
 /**
  * Loads a shared document from the server by its ID.
  * @param {string} docId - The document ID to load
+ * @returns {Promise<boolean>} Whether the document was loaded successfully
  */
 async function loadSharedDocument(docId) {
     try {
@@ -1272,6 +1603,8 @@ async function loadSharedDocument(docId) {
             url.searchParams.set('doc', docId);
             window.history.replaceState({}, '', url);
 
+            return true;
+
         } else {
             throw new Error(data.error || 'Failed to load document');
         }
@@ -1279,6 +1612,7 @@ async function loadSharedDocument(docId) {
     } catch (error) {
         console.error('Error loading shared document:', error);
         showToast('Error loading shared document: ' + error.message, 5000);
+        return false;
     }
 }
 
@@ -1306,16 +1640,45 @@ function waitForEditorReady() {
 }
 
 /**
- * Checks the URL for a shared document ID parameter and loads it if present.
+ * Checks if there's a shared document ID in the URL.
+ * @returns {string|null} The document ID or null if not present
  */
-async function checkForSharedDocument() {
+function getSharedDocumentId() {
     const urlParams = new URLSearchParams(window.location.search);
-    const docId = urlParams.get('doc');
+    return urlParams.get('doc');
+}
+
+/**
+ * Checks the URL for a shared document ID parameter and loads it if present.
+ * @param {boolean} isInitialLoad - Whether this is the initial page load
+ */
+async function checkForSharedDocument(isInitialLoad = false) {
+    const docId = getSharedDocumentId();
 
     if (docId) {
         try {
             await waitForEditorReady();
-            loadSharedDocument(docId);
+
+            // If this is the initial load and there's only an empty default tab,
+            // we'll remove it after successfully loading the shared document
+            const hasOnlyDefaultTab = isInitialLoad && tabs.length === 1 &&
+                tabs[0].fileName === 'Untitled' && tabs[0].content === '';
+            const defaultTabId = hasOnlyDefaultTab ? tabs[0].id : null;
+
+            const loaded = await loadSharedDocument(docId);
+
+            // Remove the empty default tab if shared document loaded successfully
+            if (loaded && defaultTabId !== null && tabs.length > 1) {
+                const defaultTab = tabs.find(t => t.id === defaultTabId);
+                if (defaultTab && defaultTab.id !== activeTabId) {
+                    const tabElement = document.querySelector(`.tab[data-tab-id="${defaultTab.id}"]`);
+                    if (tabElement) {
+                        tabElement.remove();
+                    }
+                    tabs = tabs.filter(t => t.id !== defaultTabId);
+                    saveTabsToLocalStorage();
+                }
+            }
         } catch (error) {
             console.error('Failed to load shared document:', error);
             showToast('Failed to initialize editor', 5000);
@@ -1343,7 +1706,8 @@ function setupEventListeners() {
     previewPanel.addEventListener('scroll', () => {
         if (isSyncScrollEnabled && !isScrollingEditor) {
             isScrollingPreview = true;
-            setTimeout(() => { isScrollingPreview = false; }, 50);
+            syncEditorScroll();
+            setTimeout(() => { isScrollingPreview = false; }, 100);
         }
     });
 }
@@ -1380,7 +1744,8 @@ function init() {
     setupResizer();
     setupDragDrop();
     setupKeyboardShortcuts();
-    checkForSharedDocument();
+    checkForSharedDocument(true);
+    loadVersion();
 
     if (!hasFileSystemAccess) {
         console.warn('File System Access API not supported. Using fallback methods.');
@@ -1396,10 +1761,20 @@ if ('serviceWorker' in navigator) {
     });
 }
 
-window.addEventListener('monaco-ready', () => {
+/**
+ * Starts the application when Monaco is ready.
+ */
+function startApp() {
     init();
     initializeEditor();
-});
+}
+
+// Check if Monaco is already ready (race condition prevention)
+if (window.monacoLoaderReady) {
+    startApp();
+} else {
+    window.addEventListener('monaco-ready', startApp);
+}
 
 setTimeout(() => {
     if (!editor) {

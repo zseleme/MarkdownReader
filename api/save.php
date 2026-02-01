@@ -10,8 +10,9 @@ $allowedOrigins = [
     'http://localhost:3000',
     'http://127.0.0.1:8000',
     'http://127.0.0.1:3000',
-    'https://seleme.pt',
-    'https://seleme.pt/'
+    'https://zaiden.eng.br',
+    'https://md.zaiden.eng.br',
+    'https://md-dev.zaiden.eng.br',
     // Add your production domain here: 'https://yourdomain.com'
 ];
 

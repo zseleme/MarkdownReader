@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="MDReader - Modern Markdown Editor with Live Preview">
     <meta name="theme-color" content="#1a1a1a">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com; img-src 'self' data: https:; connect-src 'self' https://cdn.jsdelivr.net; worker-src 'self' blob:;">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; img-src 'self' data: https:; connect-src 'self' https://cdn.jsdelivr.net; worker-src 'self' blob: data:;">
 
     <!-- PWA -->
     <link rel="manifest" href="manifest.json">
@@ -145,7 +145,8 @@
     </div>
 
     <div class="status-bar" id="status-bar">
-        Untitled - Line 1, Column 1 - Dark - Ready
+        <span class="status-version" id="status-version">v--</span>
+        <span class="status-info" id="status-info">Untitled - Line 1, Column 1 - Dark - Ready</span>
     </div>
 
     <!-- Notification Toast -->

@@ -5,8 +5,8 @@
  * Provides offline functionality through strategic caching of static assets and CDN resources.
  */
 
-const CACHE_NAME = 'mdreader-v1.0.0';
-const CDN_CACHE = 'mdreader-cdn-v1.0.0';
+const CACHE_NAME = 'mdreader-v1.6.0';
+const CDN_CACHE = 'mdreader-cdn-v1.6.0';
 
 const STATIC_ASSETS = [
     './',
