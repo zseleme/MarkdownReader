@@ -126,6 +126,7 @@ let isScrollingEditor = false;
 let isScrollingPreview = false;
 let syncScrollDebounceTimer = null;
 let previewDebounceTimer = null;
+let contentChangeDebounceTimer = null;
 let autoSaveEnabled = true;
 let autoSaveTimer = null;
 let autoSaveStatusTimeout = null;
@@ -777,18 +778,20 @@ function updateTabUI(tab) {
 
 /**
  * Updates the active tab's content and modified state based on editor content.
+ * Optimized to avoid expensive operations on every keystroke.
  */
 function updateActiveTabContent() {
     const tab = tabs.find(t => t.id === activeTabId);
     if (!tab || !editor) return;
 
-    const currentContent = editor.getValue();
-    const changed = currentContent !== tab.content;
-
-    tab.isModified = changed;
-    isModified = changed;
-    updateAutoSaveStatus(changed ? 'modified' : 'ready');
-    updateTabUI(tab);
+    // Mark as modified without expensive comparison
+    // Full comparison only needed when explicitly checking (e.g., before close)
+    if (!tab.isModified) {
+        tab.isModified = true;
+        isModified = true;
+        updateAutoSaveStatus('modified');
+        updateTabUI(tab);
+    }
     updateStatusBar();
 }
 
@@ -995,7 +998,13 @@ function initializeEditor() {
 
         editor.onDidChangeModelContent(() => {
             if (!isApplyingEditorContent) {
-                updateActiveTabContent();
+                // Debounce content change handling for better performance with large pastes
+                if (contentChangeDebounceTimer) {
+                    clearTimeout(contentChangeDebounceTimer);
+                }
+                contentChangeDebounceTimer = setTimeout(() => {
+                    updateActiveTabContent();
+                }, 100);
                 updatePreview();
             }
         });
@@ -1018,7 +1027,12 @@ function initializeEditor() {
 
         editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyV, async () => {
             const text = await navigator.clipboard.readText();
-            editor.trigger('keyboard', 'type', { text });
+            const selection = editor.getSelection();
+            editor.executeEdits('paste', [{
+                range: selection,
+                text: text,
+                forceMoveMarkers: true
+            }]);
         });
 
         editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyX, async () => {
