@@ -829,7 +829,16 @@ function updatePreview() {
  * Initializes the Monaco editor with configuration and event handlers.
  */
 function initializeEditor() {
+    console.log('initializeEditor called, typeof require:', typeof require);
+
+    if (typeof require === 'undefined') {
+        console.error('AMD require is not defined');
+        showToast('Failed to load editor: AMD loader not available', 0);
+        return;
+    }
+
     require(['vs/editor/editor.main'], function() {
+        console.log('Monaco editor.main loaded successfully');
         const container = document.getElementById('editor');
 
         editor = monaco.editor.create(container, {
@@ -902,6 +911,9 @@ function initializeEditor() {
         updateAutoSaveStatus('ready');
         setupAutoSave();
         showToast('MDReader loaded successfully!');
+    }, function(err) {
+        console.error('Failed to load Monaco editor modules:', err);
+        showToast('Failed to load editor modules. Please refresh the page.', 0);
     });
 }
 
@@ -1565,10 +1577,27 @@ if ('serviceWorker' in navigator) {
     });
 }
 
-window.addEventListener('monaco-ready', () => {
+/**
+ * Starts the application when Monaco is ready.
+ */
+function startApp() {
+    console.log('startApp called');
     init();
     initializeEditor();
-});
+}
+
+// Check if Monaco is already ready (race condition prevention)
+console.log('Checking Monaco readiness, monacoLoaderReady:', window.monacoLoaderReady);
+if (window.monacoLoaderReady) {
+    console.log('Monaco already ready, starting app immediately');
+    startApp();
+} else {
+    console.log('Monaco not ready, waiting for monaco-ready event');
+    window.addEventListener('monaco-ready', () => {
+        console.log('monaco-ready event received');
+        startApp();
+    });
+}
 
 setTimeout(() => {
     if (!editor) {
