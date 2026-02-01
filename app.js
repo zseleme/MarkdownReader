@@ -217,9 +217,9 @@ function updateAutoSaveStatus(status) {
  * Updates the status bar with current editor state information.
  */
 function updateStatusBar() {
-    const statusBar = document.getElementById('status-bar');
+    const statusInfo = document.getElementById('status-info');
     if (!editor) {
-        statusBar.textContent = 'Loading...';
+        statusInfo.textContent = 'Loading...';
         return;
     }
 
@@ -231,7 +231,37 @@ function updateStatusBar() {
     const theme = isDarkTheme ? 'Dark' : 'Light';
     const status = isModified ? 'Modified' : 'Saved';
 
-    statusBar.textContent = `${currentFileName} - Line ${position.lineNumber}, Column ${position.column} - ${wordCount} words, ${charCount} chars - ${theme} - ${status}`;
+    statusInfo.textContent = `${currentFileName} - Line ${position.lineNumber}, Column ${position.column} - ${wordCount} words, ${charCount} chars - ${theme} - ${status}`;
+}
+
+/**
+ * Fetches and displays the application version from version.json.
+ */
+async function loadVersion() {
+    const versionElement = document.getElementById('status-version');
+    try {
+        const response = await fetch('./version.json?t=' + Date.now());
+        if (response.ok) {
+            const data = await response.json();
+            const version = data.version || 'dev';
+            const branch = data.branch || '';
+            const shortCommit = data.commit ? data.commit.substring(0, 7) : '';
+
+            if (branch === 'develop') {
+                versionElement.textContent = `v${version} (dev)`;
+                versionElement.title = `Branch: ${branch}\nCommit: ${shortCommit}\nDeployed: ${data.deployed_at || 'N/A'}`;
+            } else {
+                versionElement.textContent = `v${version}`;
+                versionElement.title = `Commit: ${shortCommit}\nDeployed: ${data.deployed_at || 'N/A'}`;
+            }
+        } else {
+            versionElement.textContent = 'vLocal';
+            versionElement.title = 'Running locally';
+        }
+    } catch {
+        versionElement.textContent = 'vLocal';
+        versionElement.title = 'Running locally';
+    }
 }
 
 /**
@@ -1701,6 +1731,7 @@ function init() {
     setupDragDrop();
     setupKeyboardShortcuts();
     checkForSharedDocument(true);
+    loadVersion();
 
     if (!hasFileSystemAccess) {
         console.warn('File System Access API not supported. Using fallback methods.');
