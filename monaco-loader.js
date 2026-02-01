@@ -28,13 +28,11 @@
     script.async = true;
 
     script.onload = function() {
-        console.log('Monaco loader script loaded successfully');
         try {
             require.config({
                 paths: { 'vs': `${MONACO_CDN_BASE}/vs` }
             });
             window.monacoLoaderReady = true;
-            console.log('Monaco loader ready, dispatching event');
             window.dispatchEvent(new Event('monaco-ready'));
         } catch (e) {
             console.error('Error configuring Monaco:', e);

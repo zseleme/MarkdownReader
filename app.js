@@ -24,15 +24,79 @@ const FETCH_TIMEOUT_MS = 30000;
 const MIN_PANEL_WIDTH_PERCENT = 20;
 const MAX_PANEL_WIDTH_PERCENT = 80;
 
+// Track current line number during markdown parsing
+let currentSourceLine = 1;
+
 const renderer = new marked.Renderer();
-renderer.heading = function({ tokens, depth }) {
+
+renderer.heading = function({ tokens, depth, raw }) {
     const text = this.parser.parseInline(tokens);
     const rawText = tokens.map(t => t.raw || t.text || '').join('');
     const slug = rawText.toLowerCase()
         .replace(/[^\w\s-]/g, '')
         .replace(/\s+/g, '-')
         .trim();
-    return `<h${depth} id="${slug}">${text}</h${depth}>`;
+    return `<h${depth} id="${slug}" data-line="${currentSourceLine}">${text}</h${depth}>`;
+};
+
+renderer.paragraph = function({ tokens }) {
+    const text = this.parser.parseInline(tokens);
+    return `<p data-line="${currentSourceLine}">${text}</p>\n`;
+};
+
+renderer.code = function({ text, lang }) {
+    const language = lang || '';
+    const highlighted = Prism.languages[language]
+        ? Prism.highlight(text, Prism.languages[language], language)
+        : text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return `<pre data-line="${currentSourceLine}"><code class="language-${language}">${highlighted}</code></pre>\n`;
+};
+
+renderer.blockquote = function({ tokens }) {
+    const body = this.parser.parse(tokens);
+    return `<blockquote data-line="${currentSourceLine}">${body}</blockquote>\n`;
+};
+
+renderer.list = function({ items, ordered, start }) {
+    const tag = ordered ? 'ol' : 'ul';
+    const startAttr = ordered && start !== 1 ? ` start="${start}"` : '';
+    let body = '';
+    for (const item of items) {
+        body += this.listitem(item);
+    }
+    return `<${tag}${startAttr} data-line="${currentSourceLine}">${body}</${tag}>\n`;
+};
+
+renderer.listitem = function({ tokens, task, checked }) {
+    let text = this.parser.parse(tokens);
+    if (task) {
+        const checkbox = `<input type="checkbox" ${checked ? 'checked' : ''} disabled>`;
+        text = checkbox + text;
+    }
+    return `<li>${text}</li>\n`;
+};
+
+renderer.table = function({ header, rows }) {
+    let output = `<table data-line="${currentSourceLine}"><thead><tr>`;
+    for (const cell of header) {
+        const align = cell.align ? ` style="text-align:${cell.align}"` : '';
+        output += `<th${align}>${this.parser.parseInline(cell.tokens)}</th>`;
+    }
+    output += '</tr></thead><tbody>';
+    for (const row of rows) {
+        output += '<tr>';
+        for (const cell of row) {
+            const align = cell.align ? ` style="text-align:${cell.align}"` : '';
+            output += `<td${align}>${this.parser.parseInline(cell.tokens)}</td>`;
+        }
+        output += '</tr>';
+    }
+    output += '</tbody></table>\n';
+    return output;
+};
+
+renderer.hr = function() {
+    return `<hr data-line="${currentSourceLine}" />\n`;
 };
 
 marked.setOptions({
@@ -43,10 +107,7 @@ marked.setOptions({
     smartLists: true,
     smartypants: false,
     xhtml: true,
-    renderer: renderer,
-    highlight: (code, lang) => Prism.languages[lang]
-        ? Prism.highlight(code, Prism.languages[lang], lang)
-        : code
+    renderer: renderer
 });
 
 let tabs = [];
@@ -772,7 +833,7 @@ function loadTabsFromLocalStorage() {
 }
 
 /**
- * Renders markdown content to the preview pane with syntax highlighting.
+ * Renders markdown content to the preview pane with syntax mapping for scroll sync.
  */
 function updatePreview() {
     if (!editor) return;
@@ -781,21 +842,41 @@ function updatePreview() {
     const preview = document.getElementById('preview');
 
     try {
-        const html = marked.parse(content);
+        // Use lexer to get tokens with line information
+        const tokens = marked.lexer(content);
+
+        // Build HTML with line numbers using walkTokens
+        let html = '';
+        const lines = content.split('\n');
+        let currentLine = 1;
+
+        // Process each top-level token
+        for (const token of tokens) {
+            // Calculate line number from raw content position
+            if (token.raw) {
+                const beforeToken = content.substring(0, content.indexOf(token.raw));
+                currentLine = (beforeToken.match(/\n/g) || []).length + 1;
+            }
+            currentSourceLine = currentLine;
+
+            // Parse this token to HTML
+            html += marked.parser([token]);
+        }
 
         let cleanHTML;
         if (typeof DOMPurify !== 'undefined') {
-            cleanHTML = DOMPurify.sanitize(html, DOMPURIFY_CONFIG);
+            // Allow data-line attribute
+            const config = {
+                ...DOMPURIFY_CONFIG,
+                ALLOWED_ATTR: [...DOMPURIFY_CONFIG.ALLOWED_ATTR, 'data-line']
+            };
+            cleanHTML = DOMPurify.sanitize(html, config);
         } else {
             console.warn('DOMPurify not loaded, preview may be vulnerable to XSS');
             cleanHTML = html;
         }
 
         preview.innerHTML = cleanHTML;
-
-        preview.querySelectorAll('pre code').forEach((block) => {
-            Prism.highlightElement(block);
-        });
 
         preview.querySelectorAll('a').forEach((link) => {
             link.onclick = (e) => {
@@ -829,8 +910,6 @@ function updatePreview() {
  * Initializes the Monaco editor with configuration and event handlers.
  */
 function initializeEditor() {
-    console.log('initializeEditor called, typeof require:', typeof require);
-
     if (typeof require === 'undefined') {
         console.error('AMD require is not defined');
         showToast('Failed to load editor: AMD loader not available', 0);
@@ -838,7 +917,6 @@ function initializeEditor() {
     }
 
     require(['vs/editor/editor.main'], function() {
-        console.log('Monaco editor.main loaded successfully');
         const container = document.getElementById('editor');
 
         editor = monaco.editor.create(container, {
@@ -1037,7 +1115,7 @@ function toggleSyncScroll() {
 
 /**
  * Synchronizes preview scroll position with editor scroll position.
- * Uses line-based synchronization for better accuracy.
+ * Uses source line mapping for accurate synchronization.
  */
 function syncPreviewScroll() {
     if (!editor || !isSyncScrollEnabled) return;
@@ -1053,7 +1131,7 @@ function syncPreviewScroll() {
 }
 
 /**
- * Performs the actual preview synchronization.
+ * Performs the actual preview synchronization using data-line attributes.
  */
 function performPreviewSync() {
     if (!editor || !isSyncScrollEnabled) return;
@@ -1066,13 +1144,10 @@ function performPreviewSync() {
     if (!visibleRanges || visibleRanges.length === 0) return;
 
     const firstVisibleLine = visibleRanges[0].startLineNumber;
-    const totalLines = editor.getModel().getLineCount();
 
-    if (totalLines <= 1) return;
-
-    // Get all block-level elements in preview (including nested li elements)
-    const blockElements = preview.querySelectorAll('h1, h2, h3, h4, h5, h6, p, pre, li, blockquote, table, hr, img');
-    if (blockElements.length === 0) {
+    // Find elements with data-line attributes
+    const lineElements = preview.querySelectorAll('[data-line]');
+    if (lineElements.length === 0) {
         // Fallback to percentage-based scroll
         const editorScrollTop = editor.getScrollTop();
         const editorScrollHeight = editor.getScrollHeight() - editor.getLayoutInfo().height;
@@ -1084,37 +1159,56 @@ function performPreviewSync() {
         return;
     }
 
-    // Calculate scroll position based on line ratio with interpolation
-    const lineRatio = (firstVisibleLine - 1) / Math.max(1, totalLines - 1);
+    // Find the element that corresponds to the visible line
+    let targetElement = null;
+    let nextElement = null;
 
-    // Use weighted average between element-based and percentage-based scrolling
-    const elementIndex = lineRatio * (blockElements.length - 1);
-    const lowerIndex = Math.floor(elementIndex);
-    const upperIndex = Math.min(lowerIndex + 1, blockElements.length - 1);
-    const interpolation = elementIndex - lowerIndex;
+    for (let i = 0; i < lineElements.length; i++) {
+        const elementLine = parseInt(lineElements[i].getAttribute('data-line'), 10);
+        if (elementLine <= firstVisibleLine) {
+            targetElement = lineElements[i];
+            nextElement = lineElements[i + 1] || null;
+        } else {
+            if (!targetElement) {
+                targetElement = lineElements[i];
+            }
+            break;
+        }
+    }
+
+    if (!targetElement) return;
 
     const previewRect = preview.getBoundingClientRect();
+    const elementRect = targetElement.getBoundingClientRect();
+    const elementTop = elementRect.top - previewRect.top + previewPanel.scrollTop;
 
-    // Get positions of both elements for interpolation
-    const lowerElement = blockElements[lowerIndex];
-    const upperElement = blockElements[upperIndex];
+    // Calculate interpolation within the element
+    const elementLine = parseInt(targetElement.getAttribute('data-line'), 10);
+    let interpolation = 0;
 
-    const lowerOffset = lowerElement.getBoundingClientRect().top - previewRect.top + previewPanel.scrollTop;
-    const upperOffset = upperElement.getBoundingClientRect().top - previewRect.top + previewPanel.scrollTop;
+    if (nextElement) {
+        const nextLine = parseInt(nextElement.getAttribute('data-line'), 10);
+        const nextRect = nextElement.getBoundingClientRect();
+        const nextTop = nextRect.top - previewRect.top + previewPanel.scrollTop;
 
-    // Interpolate between elements for smoother scrolling
-    const targetScroll = Math.max(0, lowerOffset + (upperOffset - lowerOffset) * interpolation - 10);
+        if (nextLine > elementLine) {
+            const lineProgress = (firstVisibleLine - elementLine) / (nextLine - elementLine);
+            interpolation = lineProgress * (nextTop - elementTop);
+        }
+    }
 
-    // Apply scroll with minimal visual jump
+    const targetScroll = Math.max(0, elementTop + interpolation - 20);
+
+    // Apply scroll smoothly
     const scrollDiff = Math.abs(previewPanel.scrollTop - targetScroll);
-    if (scrollDiff > 5) { // Only scroll if difference is noticeable
+    if (scrollDiff > 3) {
         previewPanel.scrollTop = targetScroll;
     }
 }
 
 /**
  * Synchronizes editor scroll position with preview scroll position.
- * Uses element-based synchronization for better accuracy.
+ * Uses data-line attributes for accurate reverse mapping.
  */
 function syncEditorScroll() {
     if (!editor || !isSyncScrollEnabled) return;
@@ -1123,45 +1217,62 @@ function syncEditorScroll() {
     const preview = document.getElementById('preview');
 
     const previewScrollTop = previewPanel.scrollTop;
-    const previewScrollHeight = previewPanel.scrollHeight - previewPanel.clientHeight;
 
-    if (previewScrollHeight <= 0) return;
-
-    // Get all block-level elements in preview
-    const blockElements = preview.querySelectorAll('h1, h2, h3, h4, h5, h6, p, pre, li, blockquote, table, hr, img');
-    if (blockElements.length === 0) return;
+    // Find elements with data-line attributes
+    const lineElements = preview.querySelectorAll('[data-line]');
+    if (lineElements.length === 0) return;
 
     const previewRect = preview.getBoundingClientRect();
 
-    // Find visible element with interpolation
-    let visibleElementIndex = 0;
-    let elementProgress = 0;
+    // Find the element at the current scroll position
+    let targetElement = null;
+    let nextElement = null;
 
-    for (let i = 0; i < blockElements.length; i++) {
-        const elementRect = blockElements[i].getBoundingClientRect();
-        const elementOffsetTop = elementRect.top - previewRect.top + previewPanel.scrollTop;
-        const nextElementOffset = i < blockElements.length - 1
-            ? blockElements[i + 1].getBoundingClientRect().top - previewRect.top + previewPanel.scrollTop
-            : previewScrollHeight;
+    for (let i = 0; i < lineElements.length; i++) {
+        const elementRect = lineElements[i].getBoundingClientRect();
+        const elementTop = elementRect.top - previewRect.top + previewPanel.scrollTop;
 
-        if (previewScrollTop >= elementOffsetTop && previewScrollTop < nextElementOffset) {
-            visibleElementIndex = i;
-            const range = nextElementOffset - elementOffsetTop;
-            elementProgress = range > 0 ? (previewScrollTop - elementOffsetTop) / range : 0;
-            break;
-        } else if (elementOffsetTop > previewScrollTop) {
+        if (elementTop <= previewScrollTop + 50) {
+            targetElement = lineElements[i];
+            nextElement = lineElements[i + 1] || null;
+        } else {
             break;
         }
-        visibleElementIndex = i;
     }
 
-    // Map element index back to editor line with interpolation
-    const totalLines = editor.getModel().getLineCount();
-    const lineRatio = (visibleElementIndex + elementProgress) / Math.max(1, blockElements.length - 1);
-    const targetLine = Math.max(1, Math.min(totalLines, Math.round(lineRatio * (totalLines - 1)) + 1));
+    if (!targetElement) {
+        targetElement = lineElements[0];
+    }
 
-    // Scroll editor to target line (near top of viewport)
-    editor.revealLineInCenterIfOutsideViewport(targetLine);
+    const targetLine = parseInt(targetElement.getAttribute('data-line'), 10);
+
+    // Calculate interpolation
+    let interpolatedLine = targetLine;
+
+    if (nextElement) {
+        const nextLine = parseInt(nextElement.getAttribute('data-line'), 10);
+        const elementRect = targetElement.getBoundingClientRect();
+        const nextRect = nextElement.getBoundingClientRect();
+        const elementTop = elementRect.top - previewRect.top + previewPanel.scrollTop;
+        const nextTop = nextRect.top - previewRect.top + previewPanel.scrollTop;
+
+        if (nextTop > elementTop) {
+            const progress = (previewScrollTop - elementTop) / (nextTop - elementTop);
+            interpolatedLine = targetLine + progress * (nextLine - targetLine);
+        }
+    }
+
+    const finalLine = Math.max(1, Math.round(interpolatedLine));
+
+    // Only scroll if the line is not already visible
+    const visibleRanges = editor.getVisibleRanges();
+    if (visibleRanges && visibleRanges.length > 0) {
+        const start = visibleRanges[0].startLineNumber;
+        const end = visibleRanges[0].endLineNumber;
+        if (finalLine < start || finalLine > end) {
+            editor.revealLineInCenter(finalLine);
+        }
+    }
 }
 
 /**
@@ -1581,22 +1692,15 @@ if ('serviceWorker' in navigator) {
  * Starts the application when Monaco is ready.
  */
 function startApp() {
-    console.log('startApp called');
     init();
     initializeEditor();
 }
 
 // Check if Monaco is already ready (race condition prevention)
-console.log('Checking Monaco readiness, monacoLoaderReady:', window.monacoLoaderReady);
 if (window.monacoLoaderReady) {
-    console.log('Monaco already ready, starting app immediately');
     startApp();
 } else {
-    console.log('Monaco not ready, waiting for monaco-ready event');
-    window.addEventListener('monaco-ready', () => {
-        console.log('monaco-ready event received');
-        startApp();
-    });
+    window.addEventListener('monaco-ready', startApp);
 }
 
 setTimeout(() => {
