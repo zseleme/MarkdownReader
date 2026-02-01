@@ -125,6 +125,7 @@ let isSyncScrollEnabled = false;
 let isScrollingEditor = false;
 let isScrollingPreview = false;
 let syncScrollDebounceTimer = null;
+let previewDebounceTimer = null;
 let autoSaveEnabled = true;
 let autoSaveTimer = null;
 let autoSaveStatusTimeout = null;
@@ -834,38 +835,63 @@ function loadTabsFromLocalStorage() {
 
 /**
  * Renders markdown content to the preview pane with syntax mapping for scroll sync.
+ * Uses debouncing to prevent UI freezing on large documents.
  */
 function updatePreview() {
     if (!editor) return;
 
+    // Debounce preview updates for large content
+    if (previewDebounceTimer) {
+        clearTimeout(previewDebounceTimer);
+    }
+
     const content = editor.getValue();
+
+    // For large content, use longer debounce
+    const debounceMs = content.length > 50000 ? 300 : content.length > 10000 ? 150 : 50;
+
+    previewDebounceTimer = setTimeout(() => {
+        performPreviewUpdate(content);
+    }, debounceMs);
+}
+
+/**
+ * Performs the actual preview rendering.
+ * @param {string} content - The markdown content to render
+ */
+function performPreviewUpdate(content) {
     const preview = document.getElementById('preview');
 
     try {
         // Use lexer to get tokens with line information
         const tokens = marked.lexer(content);
 
-        // Build HTML with line numbers using walkTokens
+        // Build HTML with line numbers - O(n) algorithm using position tracking
         let html = '';
-        const lines = content.split('\n');
-        let currentLine = 1;
+        let searchPos = 0;
 
-        // Process each top-level token
         for (const token of tokens) {
-            // Calculate line number from raw content position
             if (token.raw) {
-                const beforeToken = content.substring(0, content.indexOf(token.raw));
-                currentLine = (beforeToken.match(/\n/g) || []).length + 1;
+                // Find position of this token starting from last position
+                const tokenPos = content.indexOf(token.raw, searchPos);
+                if (tokenPos !== -1) {
+                    // Count newlines only in the substring we haven't processed
+                    const segment = content.substring(searchPos, tokenPos);
+                    const newlines = (segment.match(/\n/g) || []).length;
+                    currentSourceLine += newlines;
+                    searchPos = tokenPos + token.raw.length;
+                }
             }
-            currentSourceLine = currentLine;
 
             // Parse this token to HTML
             html += marked.parser([token]);
         }
 
+        // Reset line counter for next update
+        currentSourceLine = 1;
+
         let cleanHTML;
         if (typeof DOMPurify !== 'undefined') {
-            // Allow data-line attribute
             const config = {
                 ...DOMPURIFY_CONFIG,
                 ALLOWED_ATTR: [...DOMPURIFY_CONFIG.ALLOWED_ATTR, 'data-line']
@@ -878,6 +904,7 @@ function updatePreview() {
 
         preview.innerHTML = cleanHTML;
 
+        // Setup link handlers
         preview.querySelectorAll('a').forEach((link) => {
             link.onclick = (e) => {
                 const href = link.getAttribute('href');
@@ -932,7 +959,8 @@ function initializeEditor() {
             scrollBeyondLastLine: false,
             folding: true,
             links: true,
-            matchBrackets: 'always'
+            matchBrackets: 'always',
+            stickyScroll: { enabled: true }
         });
 
         editor.onDidChangeModelContent(() => {
