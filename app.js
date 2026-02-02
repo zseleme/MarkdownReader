@@ -1187,7 +1187,7 @@ function toggleSyncScroll() {
 
 /**
  * Synchronizes preview scroll position with editor scroll position.
- * Uses source line mapping for accurate synchronization.
+ * Uses percentage-based scrolling for reliable synchronization.
  */
 function syncPreviewScroll() {
     if (!editor || !isSyncScrollEnabled) return;
@@ -1198,152 +1198,45 @@ function syncPreviewScroll() {
     }
 
     syncScrollDebounceTimer = setTimeout(() => {
-        performPreviewSync();
+        const previewPanel = document.getElementById('preview-panel');
+
+        const editorScrollTop = editor.getScrollTop();
+        const editorScrollHeight = editor.getScrollHeight() - editor.getLayoutInfo().height;
+
+        if (editorScrollHeight <= 0) return;
+
+        const scrollPercent = editorScrollTop / editorScrollHeight;
+        const previewScrollHeight = previewPanel.scrollHeight - previewPanel.clientHeight;
+        const targetScroll = scrollPercent * previewScrollHeight;
+
+        // Only apply if difference is significant
+        if (Math.abs(previewPanel.scrollTop - targetScroll) > 5) {
+            previewPanel.scrollTop = targetScroll;
+        }
     }, 16); // ~60fps
 }
 
 /**
- * Performs the actual preview synchronization using data-line attributes.
- */
-function performPreviewSync() {
-    if (!editor || !isSyncScrollEnabled) return;
-
-    const previewPanel = document.getElementById('preview-panel');
-    const preview = document.getElementById('preview');
-
-    // Get visible line range in editor
-    const visibleRanges = editor.getVisibleRanges();
-    if (!visibleRanges || visibleRanges.length === 0) return;
-
-    const firstVisibleLine = visibleRanges[0].startLineNumber;
-
-    // Find elements with data-line attributes
-    const lineElements = preview.querySelectorAll('[data-line]');
-    if (lineElements.length === 0) {
-        // Fallback to percentage-based scroll
-        const editorScrollTop = editor.getScrollTop();
-        const editorScrollHeight = editor.getScrollHeight() - editor.getLayoutInfo().height;
-        if (editorScrollHeight > 0) {
-            const scrollPercent = editorScrollTop / editorScrollHeight;
-            const previewScrollHeight = previewPanel.scrollHeight - previewPanel.clientHeight;
-            previewPanel.scrollTop = scrollPercent * previewScrollHeight;
-        }
-        return;
-    }
-
-    // Find the element that corresponds to the visible line
-    let targetElement = null;
-    let nextElement = null;
-
-    for (let i = 0; i < lineElements.length; i++) {
-        const elementLine = parseInt(lineElements[i].getAttribute('data-line'), 10);
-        if (elementLine <= firstVisibleLine) {
-            targetElement = lineElements[i];
-            nextElement = lineElements[i + 1] || null;
-        } else {
-            if (!targetElement) {
-                targetElement = lineElements[i];
-            }
-            break;
-        }
-    }
-
-    if (!targetElement) return;
-
-    const previewRect = preview.getBoundingClientRect();
-    const elementRect = targetElement.getBoundingClientRect();
-    const elementTop = elementRect.top - previewRect.top + previewPanel.scrollTop;
-
-    // Calculate interpolation within the element
-    const elementLine = parseInt(targetElement.getAttribute('data-line'), 10);
-    let interpolation = 0;
-
-    if (nextElement) {
-        const nextLine = parseInt(nextElement.getAttribute('data-line'), 10);
-        const nextRect = nextElement.getBoundingClientRect();
-        const nextTop = nextRect.top - previewRect.top + previewPanel.scrollTop;
-
-        if (nextLine > elementLine) {
-            const lineProgress = (firstVisibleLine - elementLine) / (nextLine - elementLine);
-            interpolation = lineProgress * (nextTop - elementTop);
-        }
-    }
-
-    const targetScroll = Math.max(0, elementTop + interpolation - 20);
-
-    // Apply scroll smoothly
-    const scrollDiff = Math.abs(previewPanel.scrollTop - targetScroll);
-    if (scrollDiff > 3) {
-        previewPanel.scrollTop = targetScroll;
-    }
-}
-
-/**
  * Synchronizes editor scroll position with preview scroll position.
- * Uses data-line attributes for accurate reverse mapping.
+ * Uses percentage-based scrolling for reliable synchronization.
  */
 function syncEditorScroll() {
     if (!editor || !isSyncScrollEnabled) return;
 
     const previewPanel = document.getElementById('preview-panel');
-    const preview = document.getElementById('preview');
 
     const previewScrollTop = previewPanel.scrollTop;
+    const previewScrollHeight = previewPanel.scrollHeight - previewPanel.clientHeight;
 
-    // Find elements with data-line attributes
-    const lineElements = preview.querySelectorAll('[data-line]');
-    if (lineElements.length === 0) return;
+    if (previewScrollHeight <= 0) return;
 
-    const previewRect = preview.getBoundingClientRect();
+    const scrollPercent = previewScrollTop / previewScrollHeight;
+    const editorScrollHeight = editor.getScrollHeight() - editor.getLayoutInfo().height;
+    const targetScroll = scrollPercent * editorScrollHeight;
 
-    // Find the element at the current scroll position
-    let targetElement = null;
-    let nextElement = null;
-
-    for (let i = 0; i < lineElements.length; i++) {
-        const elementRect = lineElements[i].getBoundingClientRect();
-        const elementTop = elementRect.top - previewRect.top + previewPanel.scrollTop;
-
-        if (elementTop <= previewScrollTop + 50) {
-            targetElement = lineElements[i];
-            nextElement = lineElements[i + 1] || null;
-        } else {
-            break;
-        }
-    }
-
-    if (!targetElement) {
-        targetElement = lineElements[0];
-    }
-
-    const targetLine = parseInt(targetElement.getAttribute('data-line'), 10);
-
-    // Calculate interpolation
-    let interpolatedLine = targetLine;
-
-    if (nextElement) {
-        const nextLine = parseInt(nextElement.getAttribute('data-line'), 10);
-        const elementRect = targetElement.getBoundingClientRect();
-        const nextRect = nextElement.getBoundingClientRect();
-        const elementTop = elementRect.top - previewRect.top + previewPanel.scrollTop;
-        const nextTop = nextRect.top - previewRect.top + previewPanel.scrollTop;
-
-        if (nextTop > elementTop) {
-            const progress = (previewScrollTop - elementTop) / (nextTop - elementTop);
-            interpolatedLine = targetLine + progress * (nextLine - targetLine);
-        }
-    }
-
-    const finalLine = Math.max(1, Math.round(interpolatedLine));
-
-    // Only scroll if the line is not already visible
-    const visibleRanges = editor.getVisibleRanges();
-    if (visibleRanges && visibleRanges.length > 0) {
-        const start = visibleRanges[0].startLineNumber;
-        const end = visibleRanges[0].endLineNumber;
-        if (finalLine < start || finalLine > end) {
-            editor.revealLineInCenter(finalLine);
-        }
+    // Only apply if difference is significant
+    if (Math.abs(editor.getScrollTop() - targetScroll) > 5) {
+        editor.setScrollTop(targetScroll);
     }
 }
 
