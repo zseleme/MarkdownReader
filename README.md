@@ -2,8 +2,6 @@
 
 > Editor de Markdown moderno, focado em privacidade, que roda inteiramente no navegador — sem instalação, sem servidores, sem rastreamento.
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/zseleme/MarkdownReader)
-
 ## Funcionalidades
 
 - Editor baseado no Monaco Editor (o mesmo motor do VS Code) com realce de sintaxe Markdown completo
@@ -56,13 +54,13 @@ python -m http.server 8080
 
 Acesse em `http://localhost:8080`.
 
-**Opção 2 — Deploy no Cloudflare Pages (recomendado):**
+**Opção 2 — Deploy no Cloudflare Workers (recomendado):**
 
-Clique no botão acima ou siga os passos:
-
-1. Crie um projeto no [Cloudflare Pages](https://pages.cloudflare.com) conectado a este repositório
-2. Crie dois KV namespaces no dashboard (produção e preview) e preencha os IDs em `wrangler.toml`
-3. O Cloudflare Pages fará deploy automático a cada push no repositório
+1. No [Cloudflare Dashboard](https://dash.cloudflare.com) acesse **Workers & Pages → Create → Worker**
+2. Conecte ao GitHub e selecione este repositório (sem fork)
+3. Defina o comando de deploy: `npx wrangler deploy`
+4. Crie um **KV namespace** em **Workers & Pages → KV** e adicione o binding `DOCUMENTS` nas configurações do Worker
+5. A partir daí, todo push na `master` fará deploy automaticamente
 
 **Forçar atualização do cache do Service Worker em desenvolvimento:**
 
