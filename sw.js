@@ -5,16 +5,31 @@
  * Provides offline functionality through strategic caching of static assets and CDN resources.
  */
 
-const CACHE_NAME = 'mdreader-v1.7.0';
-const CDN_CACHE = 'mdreader-cdn-v1.7.0';
+const CACHE_NAME = 'mdreader-v2.0.0';
+const CDN_CACHE = 'mdreader-cdn-v2.0.0';
 
 const STATIC_ASSETS = [
     './',
     './index.html',
     './styles.css',
-    './app.js',
     './monaco-loader.js',
-    './manifest.json'
+    './manifest.json',
+    // ES Modules
+    './src/app.js',
+    './src/core/state.js',
+    './src/core/constants.js',
+    './src/core/editor.js',
+    './src/features/tabs.js',
+    './src/features/files.js',
+    './src/features/preview.js',
+    './src/features/theme.js',
+    './src/features/autosave.js',
+    './src/features/sharing.js',
+    './src/ui/toast.js',
+    './src/ui/statusBar.js',
+    './src/ui/setup.js',
+    './src/utils/sanitize.js',
+    './src/utils/fetch.js'
 ];
 
 const CDN_RESOURCES = [
