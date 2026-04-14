@@ -153,3 +153,6 @@ backup/
 *.tar.gz
 *.rar
 *.7z
+
+# Claude Code
+CLAUDE.md

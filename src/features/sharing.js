@@ -28,7 +28,7 @@ export async function shareDocument() {
     try {
         showToast('Saving to server...');
 
-        const response = await fetchWithTimeout('api/save.php', {
+        const response = await fetchWithTimeout('api/save', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ content, title })
@@ -67,7 +67,7 @@ export async function loadSharedDocument(docId) {
         showToast('Loading shared document...');
 
         const response = await fetchWithTimeout(
-            'api/load.php?id=' + encodeURIComponent(docId)
+            'api/load?id=' + encodeURIComponent(docId)
         );
 
         const data = await response.json();
