@@ -1,4 +1,4 @@
-name = "mdreader"
+name = "mreader"
 main = "worker.js"
 compatibility_date = "2026-04-14"
 
@@ -6,6 +6,6 @@ compatibility_date = "2026-04-14"
 directory = "."
 binding = "ASSETS"
 
-[[kv_namespaces]]
-binding = "DOCUMENTS"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
+# KV namespace binding is configured in the Cloudflare dashboard:
+# Workers & Pages → mreader → Settings → Bindings
+# Variable name: DOCUMENTS  |  Type: KV Namespace

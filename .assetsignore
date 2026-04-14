@@ -1,0 +1,20 @@
+# Git internals
+.git/
+.gitignore
+.gitkeep
+
+# Cloudflare / Wrangler
+.wrangler/
+wrangler.toml
+
+# Worker source (served via Worker runtime, not as static files)
+worker.js
+functions/
+
+# Legacy PHP API (replaced by Worker)
+api/
+
+# Dev/config files
+CLAUDE.md
+*.md
+!README.md
