@@ -2,6 +2,8 @@
 
 > Editor de Markdown moderno, focado em privacidade, que roda inteiramente no navegador — sem instalação, sem servidores, sem rastreamento.
 
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/zseleme/MarkdownReader)
+
 ## Funcionalidades
 
 - Editor baseado no Monaco Editor (o mesmo motor do VS Code) com realce de sintaxe Markdown completo
@@ -11,7 +13,7 @@
 - Temas claro e escuro com paletas OKLCH para máximo conforto visual
 - Scroll sincronizado entre o painel do editor e o painel de preview
 - Instalável como Progressive Web App (PWA) — funciona offline após a primeira visita
-- Compartilhamento de documentos via URL (backend PHP gera um slug único)
+- Compartilhamento de documentos via URL (Cloudflare Workers gera um slug único, conteúdo armazenado em KV)
 - Exportação para HTML limpo
 - Atalhos de teclado completos para todas as operações principais
 - Barra de status com contagem de palavras e posição do cursor
@@ -28,14 +30,14 @@
 - FontAwesome 6 (ícones)
 - CSS com variáveis OKLCH (sistema de temas)
 - Service Worker (cache offline / PWA)
-- PHP (backend opcional para compartilhamento via `api/save.php` e `api/load.php`)
-- GitHub Actions (deploy automático via FTP ao fazer push na branch `main`)
+- Cloudflare Pages Functions (backend para compartilhamento via `/api/save` e `/api/load`)
+- Cloudflare KV (armazenamento de documentos compartilhados e rate limiting)
 
 ## Pré-requisitos
 
 - Um navegador moderno baseado em Chromium (Chrome, Edge ou Opera) para uso completo da File System Access API
 - Para desenvolvimento local: qualquer servidor HTTP estático (Node.js `serve` ou Python `http.server`)
-- Para o recurso de compartilhamento de documentos: servidor web com suporte a PHP
+- Para o recurso de compartilhamento de documentos: conta Cloudflare com KV habilitado (ou qualquer deploy em Cloudflare Pages)
 - Não há `package.json`, `node_modules` ou etapa de build — todas as bibliotecas externas são carregadas via CDN ou embutidas
 
 ## Instalação / Deploy
@@ -54,11 +56,13 @@ python -m http.server 8080
 
 Acesse em `http://localhost:8080`.
 
-**Opção 2 — Deploy em servidor web:**
+**Opção 2 — Deploy no Cloudflare Pages (recomendado):**
 
-Faça upload de todos os arquivos para o servidor. O deploy é automático via GitHub Actions ao fazer push na branch `main` (FTP deploy configurado em `.github/workflows/ftp-deploy.yml`).
+Clique no botão acima ou siga os passos:
 
-O arquivo `version.json` é gerado automaticamente pelo GitHub Actions durante o deploy — não o crie ou commite manualmente.
+1. Crie um projeto no [Cloudflare Pages](https://pages.cloudflare.com) conectado a este repositório
+2. Crie dois KV namespaces no dashboard (produção e preview) e preencha os IDs em `wrangler.toml`
+3. O Cloudflare Pages fará deploy automático a cada push no repositório
 
 **Forçar atualização do cache do Service Worker em desenvolvimento:**
 
@@ -80,7 +84,7 @@ Abra DevTools → Application → Service Workers → ative "Update on reload". 
 - `Ctrl + Tab` / `Ctrl + Shift + Tab` — navegar entre abas
 
 **Compartilhar um documento:**
-- Clique no botão de compartilhamento — o conteúdo é enviado ao servidor PHP e um link único é gerado
+- Clique no botão de compartilhamento — o conteúdo é enviado ao Cloudflare Workers e um link único é gerado
 - O destinatário abre o link e o documento é carregado automaticamente
 
 **Dicas de performance:**
@@ -109,21 +113,21 @@ MDReader/
       autosave.js         # Auto-save (localStorage + File System Access API)
       files.js            # Abertura e salvamento de arquivos
       preview.js          # Renderização Markdown + scroll sincronizado
-      sharing.js          # Compartilhamento via API PHP (save/load por slug)
+      sharing.js          # Compartilhamento via Pages Functions (save/load por slug)
       tabs.js             # Gerenciamento de abas
       theme.js            # Alternância claro/escuro (variáveis OKLCH)
     ui/
       setup.js            # Inicialização do DOM e binding de eventos
       statusBar.js        # Barra de status (contagem de palavras, cursor)
       toast.js            # Sistema de notificações toast
-  api/
-    save.php              # Backend PHP: salva documento e retorna slug
-    load.php              # Backend PHP: carrega documento por slug
-  documents/              # Documentos compartilhados gerados pelo servidor
-                          # (*.md e *.json são gitignored)
+  functions/
+    api/
+      save.js             # Pages Function: POST /api/save — salva no KV e retorna slug
+      load.js             # Pages Function: GET /api/load?id=... — carrega do KV
+  wrangler.toml           # Config Cloudflare Pages + binding do KV namespace
 ```
 
-**Fluxo de compartilhamento:** o usuário clica em compartilhar → `api/save.php` armazena o documento no servidor e retorna um slug UUID → uma URL compartilhável é gerada. Ao abrir a URL, `api/load.php?id=<slug>` recupera o documento.
+**Fluxo de compartilhamento:** o usuário clica em compartilhar → `POST /api/save` (Pages Function) armazena o documento no Cloudflare KV e retorna um slug → uma URL compartilhável é gerada. Ao abrir a URL, `GET /api/load?id=<slug>` recupera o documento do KV.
 
 **Privacidade:** todos os arquivos editados ficam exclusivamente no navegador do usuário. Configurações e abas abertas são persistidas no `localStorage`. Nenhum rastreamento, cookie ou analytics.
 
